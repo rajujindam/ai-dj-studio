@@ -1,7 +1,9 @@
 package com.aidjstudio.ai_dj_studio;
 
+import com.aidjstudio.ai_dj_studio.entity.QueueEntry;
 import com.aidjstudio.ai_dj_studio.entity.Track;
 import com.aidjstudio.ai_dj_studio.entity.User;
+import com.aidjstudio.ai_dj_studio.repository.QueueEntryRepository;
 import com.aidjstudio.ai_dj_studio.repository.TrackRepository;
 import com.aidjstudio.ai_dj_studio.repository.UserRepository;
 
@@ -15,6 +17,8 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
+import org.springframework.r2dbc.core.DatabaseClient;
+
 @SpringBootTest
 class AiDjStudioApplicationTests {
 
@@ -23,6 +27,12 @@ class AiDjStudioApplicationTests {
 
 	@Autowired
 	private TrackRepository trackRepository;
+
+	@Autowired
+	private QueueEntryRepository queueEntryRepository;
+
+	@Autowired
+	private DatabaseClient databaseClient;
 
 	@Test
 	void shouldSaveAndRetrieveUser() {
@@ -81,5 +91,50 @@ class AiDjStudioApplicationTests {
 		assertEquals(track.getBpm(), retrievedTrack.getBpm());
 
 		trackRepository.deleteById(savedTrack.getId()).block();
+	}
+
+	@Test
+	void shouldSaveAndRetrieveQueueEntry() {
+
+		Long userId = databaseClient.sql(
+				"SELECT id FROM users LIMIT 1"
+		).map((row, metadata) -> row.get("id", Long.class)).one().block();
+
+		Long trackId = databaseClient.sql(
+				"SELECT id FROM tracks LIMIT 1"
+		).map((row, metadata) -> row.get("id", Long.class)).one().block();
+
+		Long loungeId = databaseClient.sql(
+				"SELECT id FROM dj_lounges LIMIT 1"
+		).map((row, metadata) -> row.get("id", Long.class)).one().block();
+
+		assertNotNull(userId);
+		assertNotNull(trackId);
+		assertNotNull(loungeId);
+
+		QueueEntry entry = new QueueEntry(
+				null,
+				loungeId,
+				trackId,
+				1,
+				0,
+				userId
+		);
+
+		QueueEntry savedEntry = queueEntryRepository.save(entry).block();
+
+		assertNotNull(savedEntry);
+		assertNotNull(savedEntry.getId());
+
+		QueueEntry retrievedEntry = queueEntryRepository
+				.findById(savedEntry.getId())
+				.block();
+
+		assertNotNull(retrievedEntry);
+		assertEquals(trackId, retrievedEntry.getTrackId());
+		assertEquals(loungeId, retrievedEntry.getLoungeId());
+		assertEquals(userId, retrievedEntry.getAddedByUserId());
+
+		queueEntryRepository.deleteById(savedEntry.getId()).block();
 	}
 }
