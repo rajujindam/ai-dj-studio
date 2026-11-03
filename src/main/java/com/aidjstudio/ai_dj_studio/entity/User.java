@@ -3,6 +3,7 @@ package com.aidjstudio.ai_dj_studio.entity;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import lombok.ToString;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.relational.core.mapping.Column;
 import org.springframework.data.relational.core.mapping.Table;
@@ -19,6 +20,7 @@ public class User {
     private String email;
 
     @Column("password_hash")
+    @ToString.Exclude
     private String passwordHash;
 
     @Column("display_name")
