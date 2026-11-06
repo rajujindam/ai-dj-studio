@@ -4,10 +4,12 @@ package com.aidjstudio.ai_dj_studio.service;
 import com.aidjstudio.ai_dj_studio.dto.auth.AuthResponse;
 import com.aidjstudio.ai_dj_studio.dto.auth.LoginRequest;
 import com.aidjstudio.ai_dj_studio.dto.auth.RegisterRequest;
+import com.aidjstudio.ai_dj_studio.entity.Role;
 import com.aidjstudio.ai_dj_studio.entity.User;
 import com.aidjstudio.ai_dj_studio.exception.EmailAlreadyExistsException;
 import com.aidjstudio.ai_dj_studio.exception.InvalidCredentialsException;
 import com.aidjstudio.ai_dj_studio.repository.UserRepository;
+import com.aidjstudio.ai_dj_studio.security.JwtService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -19,6 +21,7 @@ public class AuthService {
 
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
+    private final JwtService jwtService;
 
     public Mono<AuthResponse> register(RegisterRequest request) {
         String normalizedEmail = request.getEmail()
@@ -41,14 +44,15 @@ public class AuthService {
                             passwordEncoder.encode(request.getPassword())
                     );
                     user.setDisplayName(request.getDisplayName().trim());
-                    user.setRole("USER");
+                    user.setRole(Role.LISTENER.name());
 
                     return userRepository.save(user)
                             .map(savedUser -> new AuthResponse(
                                     savedUser.getId(),
                                     savedUser.getEmail(),
                                     savedUser.getDisplayName(),
-                                    savedUser.getRole()
+                                    savedUser.getRole(),
+                                    null
                             ));
                 });
     }
@@ -68,11 +72,19 @@ public class AuthService {
                                 "Invalid email or password"
                         )
                 ))
-                .map(user -> new AuthResponse(
-                        user.getId(),
-                        user.getEmail(),
-                        user.getDisplayName(),
-                        user.getRole()
-                ));
+                .map(user -> {
+                    String token = jwtService.generateToken(user);
+
+                    AuthResponse response = new AuthResponse(
+                            user.getId(),
+                            user.getEmail(),
+                            user.getDisplayName(),
+                            user.getRole(),
+                            token
+                    );
+
+
+                    return response;
+                });
     }
 }
