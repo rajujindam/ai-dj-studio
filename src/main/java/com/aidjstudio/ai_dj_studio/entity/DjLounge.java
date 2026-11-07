@@ -29,7 +29,7 @@ public class DjLounge {
     @Column("current_track_id")
     private Long currentTrackId;
 
-    private String status;
+    private LoungeStatus status;
 
     @Column("bpm_tolerance_pct")
     private BigDecimal bpmTolerancePct;

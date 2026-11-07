@@ -9,6 +9,9 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.bind.support.WebExchangeBindException;
 import org.springframework.web.server.ServerWebInputException;
 
+import java.nio.file.AccessDeniedException;
+
+
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
@@ -62,6 +65,41 @@ public class GlobalExceptionHandler {
                 .status(HttpStatus.UNAUTHORIZED)
                 .body(new ApiErrorResponse(
                         HttpStatus.UNAUTHORIZED.value(),
+                        exception.getMessage()
+                ));
+    }
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<ApiErrorResponse> handleAccessDenied(
+            org.springframework.security.access.AccessDeniedException exception
+    ) {
+        return ResponseEntity
+                .status(HttpStatus.FORBIDDEN)
+                .body(new ApiErrorResponse(
+                        HttpStatus.FORBIDDEN.value(),
+                        exception.getMessage()
+                ));
+    }
+
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<ApiErrorResponse> handleNotFound(
+            IllegalArgumentException exception
+    ) {
+        return ResponseEntity
+                .status(HttpStatus.NOT_FOUND)
+                .body(new ApiErrorResponse(
+                        HttpStatus.NOT_FOUND.value(),
+                        exception.getMessage()
+                ));
+    }
+
+    @ExceptionHandler(IllegalStateException.class)
+    public ResponseEntity<ApiErrorResponse> handleInvalidState(
+            IllegalStateException exception
+    ) {
+        return ResponseEntity
+                .status(HttpStatus.CONFLICT)
+                .body(new ApiErrorResponse(
+                        HttpStatus.CONFLICT.value(),
                         exception.getMessage()
                 ));
     }

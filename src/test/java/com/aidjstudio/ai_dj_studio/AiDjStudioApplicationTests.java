@@ -1,6 +1,7 @@
 package com.aidjstudio.ai_dj_studio;
 
 import com.aidjstudio.ai_dj_studio.entity.DjLounge;
+import com.aidjstudio.ai_dj_studio.entity.LoungeStatus;
 import com.aidjstudio.ai_dj_studio.entity.Track;
 import com.aidjstudio.ai_dj_studio.entity.User;
 import com.aidjstudio.ai_dj_studio.entity.QueueEntry;
@@ -145,7 +146,7 @@ class AiDjStudioApplicationTests {
                         }
                         """),
 				savedTrack.getId(),
-				"ACTIVE",
+				LoungeStatus.SCHEDULED,
 				new BigDecimal("5.00"),
 				true,
 				"MEDIUM",
@@ -168,12 +169,14 @@ class AiDjStudioApplicationTests {
 			assertNotNull(retrievedLounge);
 			assertEquals(savedUser.getId(), retrievedLounge.getHostUserId());
 			assertEquals(savedTrack.getId(), retrievedLounge.getCurrentTrackId());
-			assertEquals("ACTIVE", retrievedLounge.getStatus());
+			assertEquals(LoungeStatus.SCHEDULED, retrievedLounge.getStatus());
+
 			assertEquals(
 					"{\"genre\":\"house\",\"energy\":\"high\"}",
 					retrievedLounge.getVibeProfile().asString()
 							.replaceAll("\\s+", "")
 			);
+
 		} finally {
 			if (savedLounge != null && savedLounge.getId() != null) {
 				djLoungeRepository.deleteById(savedLounge.getId()).block();
@@ -185,89 +188,89 @@ class AiDjStudioApplicationTests {
 	}
 
 	@Test
-		void shouldSaveAndRetrieveQueueEntry() {
-			User user = new User(
-					null,
-					"queue+" + UUID.randomUUID() + "@example.com",
-					"test_hash",
-					"Queue Test User",
-					"LISTENER"
-			);
+	void shouldSaveAndRetrieveQueueEntry() {
+		User user = new User(
+				null,
+				"queue+" + UUID.randomUUID() + "@example.com",
+				"test_hash",
+				"Queue Test User",
+				"LISTENER"
+		);
 
-			Track track = new Track(
-					null,
-					"Queue Test Track",
-					"Queue Test Artist",
-					200,
-					"https://example.com/queue-track.mp3",
-					new BigDecimal("125.00"),
-					"8B",
-					new BigDecimal("0.80"),
-					new BigDecimal("0.70")
-			);
+		Track track = new Track(
+				null,
+				"Queue Test Track",
+				"Queue Test Artist",
+				200,
+				"https://example.com/queue-track.mp3",
+				new BigDecimal("125.00"),
+				"8B",
+				new BigDecimal("0.80"),
+				new BigDecimal("0.70")
+		);
 
-			User savedUser = userRepository.save(user).block();
-			Track savedTrack = trackRepository.save(track).block();
+		User savedUser = userRepository.save(user).block();
+		Track savedTrack = trackRepository.save(track).block();
 
-			assertNotNull(savedUser);
-			assertNotNull(savedTrack);
+		assertNotNull(savedUser);
+		assertNotNull(savedTrack);
 
-			DjLounge lounge = new DjLounge(
+		DjLounge lounge = new DjLounge(
+				null,
+				savedUser.getId(),
+				null,
+				savedTrack.getId(),
+				LoungeStatus.SCHEDULED,
+				new BigDecimal("5.00"),
+				true,
+				"MEDIUM",
+				LocalDateTime.now(),
+				null
+		);
+
+		DjLounge savedLounge = null;
+		QueueEntry savedEntry = null;
+
+		try {
+			savedLounge = djLoungeRepository.save(lounge).block();
+
+			assertNotNull(savedLounge);
+			assertNotNull(savedLounge.getId());
+
+			QueueEntry entry = new QueueEntry(
 					null,
-					savedUser.getId(),
-					null,
+					savedLounge.getId(),
 					savedTrack.getId(),
-					"ACTIVE",
-					new BigDecimal("5.00"),
-					true,
-					"MEDIUM",
-					LocalDateTime.now(),
-					null
+					1,
+					0,
+					savedUser.getId()
 			);
 
-			DjLounge savedLounge = null;
-			QueueEntry savedEntry = null;
+			savedEntry = queueEntryRepository.save(entry).block();
 
-			try {
-				savedLounge = djLoungeRepository.save(lounge).block();
+			assertNotNull(savedEntry);
+			assertNotNull(savedEntry.getId());
 
-				assertNotNull(savedLounge);
-				assertNotNull(savedLounge.getId());
+			QueueEntry retrievedEntry = queueEntryRepository
+					.findById(savedEntry.getId())
+					.block();
 
-				QueueEntry entry = new QueueEntry(
-						null,
-						savedLounge.getId(),
-						savedTrack.getId(),
-						1,
-						0,
-						savedUser.getId()
-				);
+			assertNotNull(retrievedEntry);
+			assertEquals(savedTrack.getId(), retrievedEntry.getTrackId());
+			assertEquals(savedLounge.getId(), retrievedEntry.getLoungeId());
+			assertEquals(savedUser.getId(), retrievedEntry.getAddedByUserId());
 
-				savedEntry = queueEntryRepository.save(entry).block();
-
-				assertNotNull(savedEntry);
-				assertNotNull(savedEntry.getId());
-
-				QueueEntry retrievedEntry = queueEntryRepository
-						.findById(savedEntry.getId())
-						.block();
-
-				assertNotNull(retrievedEntry);
-				assertEquals(savedTrack.getId(), retrievedEntry.getTrackId());
-				assertEquals(savedLounge.getId(), retrievedEntry.getLoungeId());
-				assertEquals(savedUser.getId(), retrievedEntry.getAddedByUserId());
-
-			} finally {
-				if (savedEntry != null && savedEntry.getId() != null) {
-					queueEntryRepository.deleteById(savedEntry.getId()).block();
-				}
-
-				if (savedLounge != null && savedLounge.getId() != null) {
-					djLoungeRepository.deleteById(savedLounge.getId()).block();
-				}
-
-				trackRepository.deleteById(savedTrack.getId()).block();
-				userRepository.deleteById(savedUser.getId()).block();
+		} finally {
+			if (savedEntry != null && savedEntry.getId() != null) {
+				queueEntryRepository.deleteById(savedEntry.getId()).block();
 			}
+
+			if (savedLounge != null && savedLounge.getId() != null) {
+				djLoungeRepository.deleteById(savedLounge.getId()).block();
+			}
+
+			trackRepository.deleteById(savedTrack.getId()).block();
+			userRepository.deleteById(savedUser.getId()).block();
 		}
+	}
 }
