@@ -1,5 +1,6 @@
 package com.aidjstudio.ai_dj_studio.controller;
 
+import com.aidjstudio.ai_dj_studio.dto.track.TrackAcousticProfileResponse;
 import com.aidjstudio.ai_dj_studio.dto.track.TrackResponse;
 import com.aidjstudio.ai_dj_studio.service.TrackService;
 import lombok.RequiredArgsConstructor;
@@ -26,6 +27,12 @@ public class TrackController {
     @GetMapping("/{id}")
     public Mono<ResponseEntity<TrackResponse>> getTrackById(@PathVariable Long id) {
         return trackService.getTrackById(id)
+                .map(ResponseEntity::ok);
+    }
+
+    @GetMapping("/{id}/acoustic-profile")
+    public Mono<ResponseEntity<TrackAcousticProfileResponse>> getAcousticProfile(@PathVariable Long id) {
+        return trackService.getAcousticProfileByTrackId(id)
                 .map(ResponseEntity::ok);
     }
 }
