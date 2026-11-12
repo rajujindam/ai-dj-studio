@@ -29,6 +29,7 @@ public class SecurityConfig {
                         ).permitAll()
                         .pathMatchers("/api/v1/admin/**")
                         .hasRole("ADMIN")
+                        .pathMatchers("/ws/**").permitAll()
                         .anyExchange()
                         .authenticated()
                 )
