@@ -15,6 +15,8 @@ import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.util.Comparator;
+
 @Service
 @RequiredArgsConstructor
 public class QueueService {
@@ -93,6 +95,71 @@ public class QueueService {
                 });
     }
 
+    public Flux<QueueEntryResponse> reorderQueueEntry(
+            Long loungeId,
+            Long queueEntryId,
+            Integer targetPosition,
+            Long authenticatedUserId
+    ) {
+        return findLounge(loungeId)
+                .flatMapMany(lounge -> {
+                    if (lounge.getStatus() == LoungeStatus.ENDED) {
+                        return Flux.error(new IllegalStateException(
+                                "Cannot modify queue of an ended lounge"
+                        ));
+                    }
+
+                    if (!lounge.getHostUserId().equals(authenticatedUserId)) {
+                        return Flux.error(new AccessDeniedException(
+                                "Only the lounge host can reorder the queue"
+                        ));
+                    }
+
+                    return queueEntryRepository.findByLoungeIdOrderByPositionAsc(loungeId)
+                            .collectList()
+                            .flatMapMany(entries -> {
+                                int currentIndex = -1;
+                                for (int i = 0; i < entries.size(); i++) {
+                                    if (entries.get(i).getId().equals(queueEntryId)) {
+                                        currentIndex = i;
+                                        break;
+                                    }
+                                }
+
+                                if (currentIndex == -1) {
+                                    return Flux.error(new IllegalArgumentException(
+                                            "Queue entry not found with id: " + queueEntryId
+                                    ));
+                                }
+
+                                QueueEntry movingEntry = entries.remove(currentIndex);
+                                int clampedTarget = Math.max(1, Math.min(targetPosition, entries.size() + 1));
+                                int newIndex = clampedTarget - 1;
+                                entries.add(newIndex, movingEntry);
+
+                                for (int i = 0; i < entries.size(); i++) {
+                                    entries.get(i).setPosition(i + 1);
+                                }
+
+                                return queueEntryRepository.saveAll(entries)
+                                        .collectList()
+                                        .flatMapMany(savedList -> {
+                                            savedList.sort(Comparator.comparing(QueueEntry::getPosition));
+                                            return Flux.fromIterable(savedList);
+                                        })
+                                        .map(this::toResponseDto);
+                            });
+                });
+    }
+
+    public Flux<QueueEntryResponse> moveQueueEntryToTop(
+            Long loungeId,
+            Long queueEntryId,
+            Long authenticatedUserId
+    ) {
+        return reorderQueueEntry(loungeId, queueEntryId, 1, authenticatedUserId);
+    }
+
     private Mono<DjLounge> findLounge(Long loungeId) {
         return djLoungeRepository.findById(loungeId)
                 .switchIfEmpty(Mono.error(new IllegalArgumentException(
@@ -135,7 +202,7 @@ public class QueueService {
                 .map(maxPosition -> maxPosition + 1);
     }
 
-    private QueueEntryResponse toResponseDto(QueueEntry entry) {
+    public QueueEntryResponse toResponseDto(QueueEntry entry) {
         return QueueEntryResponse.builder()
                 .id(entry.getId())
                 .loungeId(entry.getLoungeId())

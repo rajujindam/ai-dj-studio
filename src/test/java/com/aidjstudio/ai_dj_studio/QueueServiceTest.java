@@ -386,4 +386,103 @@ class QueueServiceTest {
 
         verify(queueEntryRepository, never()).delete(any());
     }
+
+    // --- REORDER QUEUE ENTRY TESTS ---
+
+    @Test
+    void reorderQueueEntry_asHost_shouldShiftInterveningEntriesAndNormalizePositions() {
+        DjLounge lounge = createLounge(1L, 100L, LoungeStatus.LIVE);
+        QueueEntry e1 = createEntry(10L, 1L, 100L, 1, 0, 100L);
+        QueueEntry e2 = createEntry(20L, 1L, 200L, 2, 0, 100L);
+        QueueEntry e3 = createEntry(30L, 1L, 300L, 3, 0, 100L);
+
+        when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
+        when(queueEntryRepository.findByLoungeIdOrderByPositionAsc(1L)).thenReturn(Flux.just(e1, e2, e3));
+        when(queueEntryRepository.saveAll(anyList())).thenAnswer(inv -> Flux.fromIterable(inv.getArgument(0)));
+
+        // Host reorders entry 30L from pos 3 to pos 1
+        StepVerifier.create(queueService.reorderQueueEntry(1L, 30L, 1, 100L))
+                .expectNextMatches(dto -> dto.getId().equals(30L) && dto.getPosition() == 1)
+                .expectNextMatches(dto -> dto.getId().equals(10L) && dto.getPosition() == 2)
+                .expectNextMatches(dto -> dto.getId().equals(20L) && dto.getPosition() == 3)
+                .verifyComplete();
+    }
+
+    @Test
+    void reorderQueueEntry_clampedTargetPositionBeyondSize_shouldPlaceAtEnd() {
+        DjLounge lounge = createLounge(1L, 100L, LoungeStatus.LIVE);
+        QueueEntry e1 = createEntry(10L, 1L, 100L, 1, 0, 100L);
+        QueueEntry e2 = createEntry(20L, 1L, 200L, 2, 0, 100L);
+        QueueEntry e3 = createEntry(30L, 1L, 300L, 3, 0, 100L);
+
+        when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
+        when(queueEntryRepository.findByLoungeIdOrderByPositionAsc(1L)).thenReturn(Flux.just(e1, e2, e3));
+        when(queueEntryRepository.saveAll(anyList())).thenAnswer(inv -> Flux.fromIterable(inv.getArgument(0)));
+
+        // Host reorders entry 10L to pos 99 (should clamp to end: position 3)
+        StepVerifier.create(queueService.reorderQueueEntry(1L, 10L, 99, 100L))
+                .expectNextMatches(dto -> dto.getId().equals(20L) && dto.getPosition() == 1)
+                .expectNextMatches(dto -> dto.getId().equals(30L) && dto.getPosition() == 2)
+                .expectNextMatches(dto -> dto.getId().equals(10L) && dto.getPosition() == 3)
+                .verifyComplete();
+    }
+
+    @Test
+    void reorderQueueEntry_asNonHost_shouldThrowAccessDeniedException() {
+        DjLounge lounge = createLounge(1L, 100L, LoungeStatus.LIVE);
+        when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
+
+        StepVerifier.create(queueService.reorderQueueEntry(1L, 10L, 1, 200L))
+                .expectErrorMatches(ex -> ex instanceof AccessDeniedException
+                        && ex.getMessage().equals("Only the lounge host can reorder the queue"))
+                .verify();
+
+        verify(queueEntryRepository, never()).saveAll(anyList());
+    }
+
+    @Test
+    void reorderQueueEntry_endedLounge_shouldThrowIllegalStateException() {
+        DjLounge lounge = createLounge(1L, 100L, LoungeStatus.ENDED);
+        when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
+
+        StepVerifier.create(queueService.reorderQueueEntry(1L, 10L, 1, 100L))
+                .expectErrorMatches(ex -> ex instanceof IllegalStateException
+                        && ex.getMessage().equals("Cannot modify queue of an ended lounge"))
+                .verify();
+
+        verify(queueEntryRepository, never()).saveAll(anyList());
+    }
+
+    @Test
+    void reorderQueueEntry_entryNotFound_shouldThrowIllegalArgumentException() {
+        DjLounge lounge = createLounge(1L, 100L, LoungeStatus.LIVE);
+        QueueEntry e1 = createEntry(10L, 1L, 100L, 1, 0, 100L);
+
+        when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
+        when(queueEntryRepository.findByLoungeIdOrderByPositionAsc(1L)).thenReturn(Flux.just(e1));
+
+        StepVerifier.create(queueService.reorderQueueEntry(1L, 999L, 1, 100L))
+                .expectErrorMatches(ex -> ex instanceof IllegalArgumentException
+                        && ex.getMessage().contains("Queue entry not found with id: 999"))
+                .verify();
+
+        verify(queueEntryRepository, never()).saveAll(anyList());
+    }
+
+    @Test
+    void moveQueueEntryToTop_asHost_shouldPlaceAtPosition1() {
+        DjLounge lounge = createLounge(1L, 100L, LoungeStatus.LIVE);
+        QueueEntry e1 = createEntry(10L, 1L, 100L, 1, 0, 100L);
+        QueueEntry e2 = createEntry(20L, 1L, 200L, 2, 0, 100L);
+
+        when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
+        when(queueEntryRepository.findByLoungeIdOrderByPositionAsc(1L)).thenReturn(Flux.just(e1, e2));
+        when(queueEntryRepository.saveAll(anyList())).thenAnswer(inv -> Flux.fromIterable(inv.getArgument(0)));
+
+        // Move e2 to top
+        StepVerifier.create(queueService.moveQueueEntryToTop(1L, 20L, 100L))
+                .expectNextMatches(dto -> dto.getId().equals(20L) && dto.getPosition() == 1)
+                .expectNextMatches(dto -> dto.getId().equals(10L) && dto.getPosition() == 2)
+                .verifyComplete();
+    }
 }

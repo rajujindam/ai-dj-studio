@@ -3,11 +3,14 @@ package com.aidjstudio.ai_dj_studio.controller;
 import com.aidjstudio.ai_dj_studio.dto.lounge.CreateLoungeRequest;
 import com.aidjstudio.ai_dj_studio.dto.lounge.CreateLoungeResponse;
 import com.aidjstudio.ai_dj_studio.dto.queue.AddQueueEntryRequest;
+import com.aidjstudio.ai_dj_studio.dto.queue.LoungePlaybackStateResponse;
 import com.aidjstudio.ai_dj_studio.dto.queue.QueueEntryResponse;
+import com.aidjstudio.ai_dj_studio.dto.queue.ReorderQueueEntryRequest;
 import com.aidjstudio.ai_dj_studio.entity.DjLounge;
 import com.aidjstudio.ai_dj_studio.entity.LoungeParticipant;
 import com.aidjstudio.ai_dj_studio.service.LoungeLifecycleService;
 import com.aidjstudio.ai_dj_studio.service.LoungeMembershipService;
+import com.aidjstudio.ai_dj_studio.service.PlaybackService;
 import com.aidjstudio.ai_dj_studio.service.QueueService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -27,6 +30,7 @@ public class LoungeController {
     private final LoungeLifecycleService loungeLifecycleService;
     private final LoungeMembershipService loungeMembershipService;
     private final QueueService queueService;
+    private final PlaybackService playbackService;
 
     @PostMapping
     public Mono<ResponseEntity<CreateLoungeResponse>> createLounge(
@@ -126,5 +130,71 @@ public class LoungeController {
         return queueService
                 .removeQueueEntry(loungeId, queueEntryId, authenticatedUserId)
                 .thenReturn(ResponseEntity.noContent().<Void>build());
+    }
+
+    @PutMapping("/{loungeId}/queue/{queueEntryId}/reorder")
+    public Flux<QueueEntryResponse> reorderQueueEntry(
+            @PathVariable Long loungeId,
+            @PathVariable Long queueEntryId,
+            @Valid @RequestBody ReorderQueueEntryRequest request,
+            @AuthenticationPrincipal Jwt jwt
+    ) {
+        Long authenticatedUserId = Long.valueOf(jwt.getSubject());
+
+        return queueService.reorderQueueEntry(
+                loungeId,
+                queueEntryId,
+                request.getTargetPosition(),
+                authenticatedUserId
+        );
+    }
+
+    @PostMapping("/{loungeId}/queue/{queueEntryId}/move-to-top")
+    public Flux<QueueEntryResponse> moveQueueEntryToTop(
+            @PathVariable Long loungeId,
+            @PathVariable Long queueEntryId,
+            @AuthenticationPrincipal Jwt jwt
+    ) {
+        Long authenticatedUserId = Long.valueOf(jwt.getSubject());
+
+        return queueService.moveQueueEntryToTop(
+                loungeId,
+                queueEntryId,
+                authenticatedUserId
+        );
+    }
+
+    @GetMapping("/{loungeId}/playback")
+    public Mono<ResponseEntity<LoungePlaybackStateResponse>> getPlaybackState(
+            @PathVariable Long loungeId
+    ) {
+        return playbackService
+                .getPlaybackState(loungeId)
+                .map(ResponseEntity::ok);
+    }
+
+    @PostMapping("/{loungeId}/playback/next")
+    public Mono<ResponseEntity<LoungePlaybackStateResponse>> advanceToNextTrack(
+            @PathVariable Long loungeId,
+            @AuthenticationPrincipal Jwt jwt
+    ) {
+        Long authenticatedUserId = Long.valueOf(jwt.getSubject());
+
+        return playbackService
+                .advanceToNextTrack(loungeId, authenticatedUserId)
+                .map(ResponseEntity::ok);
+    }
+
+    @PostMapping("/{loungeId}/playback/promote/{queueEntryId}")
+    public Mono<ResponseEntity<LoungePlaybackStateResponse>> promoteTrackToNowPlaying(
+            @PathVariable Long loungeId,
+            @PathVariable Long queueEntryId,
+            @AuthenticationPrincipal Jwt jwt
+    ) {
+        Long authenticatedUserId = Long.valueOf(jwt.getSubject());
+
+        return playbackService
+                .promoteTrackToNowPlaying(loungeId, queueEntryId, authenticatedUserId)
+                .map(ResponseEntity::ok);
     }
 }
