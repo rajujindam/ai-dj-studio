@@ -1,7 +1,6 @@
 package com.aidjstudio.ai_dj_studio.service;
 
 import com.aidjstudio.ai_dj_studio.dto.queue.LoungePlaybackStateResponse;
-import com.aidjstudio.ai_dj_studio.dto.queue.QueueEntryResponse;
 import com.aidjstudio.ai_dj_studio.entity.DjLounge;
 import com.aidjstudio.ai_dj_studio.entity.LoungeStatus;
 import com.aidjstudio.ai_dj_studio.entity.QueueEntry;
@@ -13,9 +12,6 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 
-import java.util.Comparator;
-import java.util.List;
-
 @Service
 @RequiredArgsConstructor
 public class PlaybackService {
@@ -24,6 +20,7 @@ public class PlaybackService {
     private final QueueEntryRepository queueEntryRepository;
     private final QueueService queueService;
     private final LoungeSessionManager loungeSessionManager;
+    private final LoungeQueueMutationSerializer mutationSerializer;
 
     public Mono<LoungePlaybackStateResponse> getPlaybackState(Long loungeId) {
         return findLounge(loungeId)
@@ -39,6 +36,13 @@ public class PlaybackService {
     }
 
     public Mono<LoungePlaybackStateResponse> advanceToNextTrack(Long loungeId, Long authenticatedUserId) {
+        return mutationSerializer.executeSerialized(loungeId, () ->
+                doAdvanceToNextTrack(loungeId, authenticatedUserId)
+                        .flatMap(response -> queueService.broadcastQueueUpdate(loungeId, "playback").thenReturn(response))
+        );
+    }
+
+    private Mono<LoungePlaybackStateResponse> doAdvanceToNextTrack(Long loungeId, Long authenticatedUserId) {
         if (loungeSessionManager.isQueueFrozen(loungeId)) {
             return Mono.error(new IllegalStateException("Queue mutations are frozen while host is disconnected"));
         }
@@ -80,6 +84,17 @@ public class PlaybackService {
     }
 
     public Mono<LoungePlaybackStateResponse> promoteTrackToNowPlaying(
+            Long loungeId,
+            Long queueEntryId,
+            Long authenticatedUserId
+    ) {
+        return mutationSerializer.executeSerialized(loungeId, () ->
+                doPromoteTrackToNowPlaying(loungeId, queueEntryId, authenticatedUserId)
+                        .flatMap(response -> queueService.broadcastQueueUpdate(loungeId, "playback").thenReturn(response))
+        );
+    }
+
+    private Mono<LoungePlaybackStateResponse> doPromoteTrackToNowPlaying(
             Long loungeId,
             Long queueEntryId,
             Long authenticatedUserId

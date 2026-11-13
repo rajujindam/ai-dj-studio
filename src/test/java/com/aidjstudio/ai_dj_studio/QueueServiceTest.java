@@ -1,15 +1,20 @@
 package com.aidjstudio.ai_dj_studio;
 
 import com.aidjstudio.ai_dj_studio.dto.queue.AddQueueEntryRequest;
+import com.aidjstudio.ai_dj_studio.dto.websocket.WsEventEnvelope;
+import com.aidjstudio.ai_dj_studio.dto.websocket.WsQueueUpdatePayload;
 import com.aidjstudio.ai_dj_studio.entity.*;
 import com.aidjstudio.ai_dj_studio.repository.DjLoungeRepository;
 import com.aidjstudio.ai_dj_studio.repository.LoungeParticipantRepository;
 import com.aidjstudio.ai_dj_studio.repository.QueueEntryRepository;
 import com.aidjstudio.ai_dj_studio.repository.TrackRepository;
+import com.aidjstudio.ai_dj_studio.service.LoungeQueueMutationSerializer;
 import com.aidjstudio.ai_dj_studio.service.QueueService;
 import com.aidjstudio.ai_dj_studio.websocket.LoungeSessionManager;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -21,7 +26,9 @@ import reactor.test.StepVerifier;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -42,8 +49,21 @@ class QueueServiceTest {
     @Mock
     private LoungeSessionManager loungeSessionManager;
 
+    @Mock
+    private LoungeQueueMutationSerializer mutationSerializer;
+
     @InjectMocks
     private QueueService queueService;
+
+    @BeforeEach
+    void setUp() {
+        lenient().when(mutationSerializer.executeSerialized(any(), any()))
+                .thenAnswer(inv -> ((java.util.function.Supplier<Mono<?>>) inv.getArgument(1)).get());
+        lenient().when(mutationSerializer.executeSerializedFlux(any(), any()))
+                .thenAnswer(inv -> ((java.util.function.Supplier<Flux<?>>) inv.getArgument(1)).get());
+        lenient().when(queueEntryRepository.findByLoungeIdOrderByPositionAsc(any()))
+                .thenReturn(Flux.empty());
+    }
 
     private DjLounge createLounge(Long loungeId, Long hostUserId, LoungeStatus status) {
         DjLounge lounge = new DjLounge();
@@ -157,17 +177,15 @@ class QueueServiceTest {
 
         when(queueEntryRepository.save(any(QueueEntry.class))).thenAnswer(inv -> {
             QueueEntry saved = inv.getArgument(0);
-            saved.setId(10L);
+            saved.setId(1L);
             return Mono.just(saved);
         });
 
         StepVerifier.create(queueService.addTrackToQueue(1L, request, 100L))
-                .expectNextMatches(res -> res.getId().equals(10L)
-                        && res.getLoungeId().equals(1L)
+                .expectNextMatches(res -> res.getPosition() == 1
                         && res.getTrackId().equals(50L)
-                        && res.getPosition() == 1
-                        && res.getVoteCount() == 0
-                        && res.getAddedByUserId().equals(100L))
+                        && res.getAddedByUserId().equals(100L)
+                        && res.getVoteCount() == 0)
                 .verifyComplete();
 
         verify(queueEntryRepository).save(any(QueueEntry.class));
@@ -181,21 +199,40 @@ class QueueServiceTest {
         LoungeParticipant participant = createParticipant(1L, 200L);
 
         when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
-        when(loungeParticipantRepository.findByLoungeIdAndUserIdAndLeftAtIsNull(1L, 200L)).thenReturn(Mono.just(participant));
+        when(loungeParticipantRepository.findByLoungeIdAndUserIdAndLeftAtIsNull(1L, 200L))
+                .thenReturn(Mono.just(participant));
         when(trackRepository.findById(50L)).thenReturn(Mono.just(track));
         when(queueEntryRepository.existsByLoungeIdAndTrackId(1L, 50L)).thenReturn(Mono.just(false));
         when(queueEntryRepository.findByLoungeIdOrderByPositionAsc(1L)).thenReturn(Flux.empty());
 
         when(queueEntryRepository.save(any(QueueEntry.class))).thenAnswer(inv -> {
             QueueEntry saved = inv.getArgument(0);
-            saved.setId(11L);
+            saved.setId(2L);
             return Mono.just(saved);
         });
 
         StepVerifier.create(queueService.addTrackToQueue(1L, request, 200L))
-                .expectNextMatches(res -> res.getId().equals(11L)
-                        && res.getAddedByUserId().equals(200L))
+                .expectNextMatches(res -> res.getAddedByUserId().equals(200L))
                 .verifyComplete();
+
+        verify(queueEntryRepository).save(any(QueueEntry.class));
+    }
+
+    @Test
+    void addTrackToQueue_userNotParticipantOrHost_shouldThrowAccessDeniedException() {
+        DjLounge lounge = createLounge(1L, 100L, LoungeStatus.LIVE);
+        AddQueueEntryRequest request = new AddQueueEntryRequest(50L);
+
+        when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
+        when(loungeParticipantRepository.findByLoungeIdAndUserIdAndLeftAtIsNull(1L, 999L))
+                .thenReturn(Mono.empty());
+
+        StepVerifier.create(queueService.addTrackToQueue(1L, request, 999L))
+                .expectErrorMatches(ex -> ex instanceof AccessDeniedException
+                        && ex.getMessage().equals("User is not an active participant of this lounge"))
+                .verify();
+
+        verify(queueEntryRepository, never()).save(any());
     }
 
     @Test
@@ -220,22 +257,6 @@ class QueueServiceTest {
         StepVerifier.create(queueService.addTrackToQueue(1L, request, 100L))
                 .expectErrorMatches(ex -> ex instanceof IllegalStateException
                         && ex.getMessage().equals("Cannot modify queue of an ended lounge"))
-                .verify();
-
-        verify(queueEntryRepository, never()).save(any());
-    }
-
-    @Test
-    void addTrackToQueue_nonParticipantUser_shouldThrowAccessDeniedException() {
-        DjLounge lounge = createLounge(1L, 100L, LoungeStatus.LIVE);
-        AddQueueEntryRequest request = new AddQueueEntryRequest(50L);
-
-        when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
-        when(loungeParticipantRepository.findByLoungeIdAndUserIdAndLeftAtIsNull(1L, 999L)).thenReturn(Mono.empty());
-
-        StepVerifier.create(queueService.addTrackToQueue(1L, request, 999L))
-                .expectErrorMatches(ex -> ex instanceof AccessDeniedException
-                        && ex.getMessage().contains("User is not an active participant of this lounge"))
                 .verify();
 
         verify(queueEntryRepository, never()).save(any());
@@ -311,7 +332,6 @@ class QueueServiceTest {
         when(queueEntryRepository.findByIdAndLoungeId(5L, 1L)).thenReturn(Mono.just(entry));
         when(queueEntryRepository.delete(entry)).thenReturn(Mono.empty());
 
-        // Authenticated as Host (100L)
         StepVerifier.create(queueService.removeQueueEntry(1L, 5L, 100L))
                 .verifyComplete();
 
@@ -327,7 +347,6 @@ class QueueServiceTest {
         when(queueEntryRepository.findByIdAndLoungeId(5L, 1L)).thenReturn(Mono.just(entry));
         when(queueEntryRepository.delete(entry)).thenReturn(Mono.empty());
 
-        // Authenticated as submitter (200L)
         StepVerifier.create(queueService.removeQueueEntry(1L, 5L, 200L))
                 .verifyComplete();
 
@@ -342,7 +361,6 @@ class QueueServiceTest {
         when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
         when(queueEntryRepository.findByIdAndLoungeId(5L, 1L)).thenReturn(Mono.just(entry));
 
-        // Authenticated as other participant (300L)
         StepVerifier.create(queueService.removeQueueEntry(1L, 5L, 300L))
                 .expectErrorMatches(ex -> ex instanceof AccessDeniedException
                         && ex.getMessage().equals("Only the lounge host or the user who added this track can remove it"))
@@ -399,62 +417,51 @@ class QueueServiceTest {
         QueueEntry e1 = createEntry(10L, 1L, 100L, 1, 0, 100L);
         QueueEntry e2 = createEntry(20L, 1L, 200L, 2, 0, 100L);
         QueueEntry e3 = createEntry(30L, 1L, 300L, 3, 0, 100L);
+        QueueEntry e4 = createEntry(40L, 1L, 400L, 4, 0, 100L);
 
         when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
-        when(queueEntryRepository.findByLoungeIdOrderByPositionAsc(1L)).thenReturn(Flux.just(e1, e2, e3));
-        when(queueEntryRepository.saveAll(anyList())).thenAnswer(inv -> Flux.fromIterable(inv.getArgument(0)));
+        when(queueEntryRepository.findByLoungeIdOrderByPositionAsc(1L))
+                .thenReturn(Flux.just(e1, e2, e3, e4));
 
-        // Host reorders entry 30L from pos 3 to pos 1
-        StepVerifier.create(queueService.reorderQueueEntry(1L, 30L, 1, 100L))
-                .expectNextMatches(dto -> dto.getId().equals(30L) && dto.getPosition() == 1)
-                .expectNextMatches(dto -> dto.getId().equals(10L) && dto.getPosition() == 2)
+        when(queueEntryRepository.saveAll(any(Iterable.class))).thenAnswer(inv -> {
+            Iterable<QueueEntry> saved = inv.getArgument(0);
+            return Flux.fromIterable(saved);
+        });
+
+        StepVerifier.create(queueService.reorderQueueEntry(1L, 40L, 2, 100L))
+                .expectNextMatches(dto -> dto.getId().equals(10L) && dto.getPosition() == 1)
+                .expectNextMatches(dto -> dto.getId().equals(40L) && dto.getPosition() == 2)
                 .expectNextMatches(dto -> dto.getId().equals(20L) && dto.getPosition() == 3)
-                .verifyComplete();
-    }
-
-    @Test
-    void reorderQueueEntry_clampedTargetPositionBeyondSize_shouldPlaceAtEnd() {
-        DjLounge lounge = createLounge(1L, 100L, LoungeStatus.LIVE);
-        QueueEntry e1 = createEntry(10L, 1L, 100L, 1, 0, 100L);
-        QueueEntry e2 = createEntry(20L, 1L, 200L, 2, 0, 100L);
-        QueueEntry e3 = createEntry(30L, 1L, 300L, 3, 0, 100L);
-
-        when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
-        when(queueEntryRepository.findByLoungeIdOrderByPositionAsc(1L)).thenReturn(Flux.just(e1, e2, e3));
-        when(queueEntryRepository.saveAll(anyList())).thenAnswer(inv -> Flux.fromIterable(inv.getArgument(0)));
-
-        // Host reorders entry 10L to pos 99 (should clamp to end: position 3)
-        StepVerifier.create(queueService.reorderQueueEntry(1L, 10L, 99, 100L))
-                .expectNextMatches(dto -> dto.getId().equals(20L) && dto.getPosition() == 1)
-                .expectNextMatches(dto -> dto.getId().equals(30L) && dto.getPosition() == 2)
-                .expectNextMatches(dto -> dto.getId().equals(10L) && dto.getPosition() == 3)
+                .expectNextMatches(dto -> dto.getId().equals(30L) && dto.getPosition() == 4)
                 .verifyComplete();
     }
 
     @Test
     void reorderQueueEntry_asNonHost_shouldThrowAccessDeniedException() {
         DjLounge lounge = createLounge(1L, 100L, LoungeStatus.LIVE);
+
         when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
 
-        StepVerifier.create(queueService.reorderQueueEntry(1L, 10L, 1, 200L))
+        StepVerifier.create(queueService.reorderQueueEntry(1L, 10L, 2, 200L))
                 .expectErrorMatches(ex -> ex instanceof AccessDeniedException
                         && ex.getMessage().equals("Only the lounge host can reorder the queue"))
                 .verify();
 
-        verify(queueEntryRepository, never()).saveAll(anyList());
+        verify(queueEntryRepository, never()).saveAll(any(Iterable.class));
     }
 
     @Test
     void reorderQueueEntry_endedLounge_shouldThrowIllegalStateException() {
         DjLounge lounge = createLounge(1L, 100L, LoungeStatus.ENDED);
+
         when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
 
-        StepVerifier.create(queueService.reorderQueueEntry(1L, 10L, 1, 100L))
+        StepVerifier.create(queueService.reorderQueueEntry(1L, 10L, 2, 100L))
                 .expectErrorMatches(ex -> ex instanceof IllegalStateException
                         && ex.getMessage().equals("Cannot modify queue of an ended lounge"))
                 .verify();
 
-        verify(queueEntryRepository, never()).saveAll(anyList());
+        verify(queueEntryRepository, never()).saveAll(any(Iterable.class));
     }
 
     @Test
@@ -465,36 +472,57 @@ class QueueServiceTest {
         when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
         when(queueEntryRepository.findByLoungeIdOrderByPositionAsc(1L)).thenReturn(Flux.just(e1));
 
-        StepVerifier.create(queueService.reorderQueueEntry(1L, 999L, 1, 100L))
+        StepVerifier.create(queueService.reorderQueueEntry(1L, 999L, 2, 100L))
                 .expectErrorMatches(ex -> ex instanceof IllegalArgumentException
                         && ex.getMessage().contains("Queue entry not found with id: 999"))
                 .verify();
 
-        verify(queueEntryRepository, never()).saveAll(anyList());
+        verify(queueEntryRepository, never()).saveAll(any(Iterable.class));
     }
 
     @Test
-    void moveQueueEntryToTop_asHost_shouldPlaceAtPosition1() {
+    void reorderQueueEntry_clampedTargetPosition_shouldClampGracefully() {
         DjLounge lounge = createLounge(1L, 100L, LoungeStatus.LIVE);
         QueueEntry e1 = createEntry(10L, 1L, 100L, 1, 0, 100L);
         QueueEntry e2 = createEntry(20L, 1L, 200L, 2, 0, 100L);
 
         when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
         when(queueEntryRepository.findByLoungeIdOrderByPositionAsc(1L)).thenReturn(Flux.just(e1, e2));
-        when(queueEntryRepository.saveAll(anyList())).thenAnswer(inv -> Flux.fromIterable(inv.getArgument(0)));
+        when(queueEntryRepository.saveAll(any(Iterable.class))).thenAnswer(inv -> Flux.fromIterable(inv.getArgument(0)));
 
-        // Move e2 to top
-        StepVerifier.create(queueService.moveQueueEntryToTop(1L, 20L, 100L))
+        StepVerifier.create(queueService.reorderQueueEntry(1L, 10L, 999, 100L))
                 .expectNextMatches(dto -> dto.getId().equals(20L) && dto.getPosition() == 1)
                 .expectNextMatches(dto -> dto.getId().equals(10L) && dto.getPosition() == 2)
                 .verifyComplete();
     }
 
+    // --- MOVE TO TOP TESTS ---
+
+    @Test
+    void moveQueueEntryToTop_asHost_shouldMoveEntryToPositionOne() {
+        DjLounge lounge = createLounge(1L, 100L, LoungeStatus.LIVE);
+        QueueEntry e1 = createEntry(10L, 1L, 100L, 1, 0, 100L);
+        QueueEntry e2 = createEntry(20L, 1L, 200L, 2, 0, 100L);
+        QueueEntry e3 = createEntry(30L, 1L, 300L, 3, 0, 100L);
+
+        when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
+        when(queueEntryRepository.findByLoungeIdOrderByPositionAsc(1L)).thenReturn(Flux.just(e1, e2, e3));
+        when(queueEntryRepository.saveAll(any(Iterable.class))).thenAnswer(inv -> Flux.fromIterable(inv.getArgument(0)));
+
+        StepVerifier.create(queueService.moveQueueEntryToTop(1L, 30L, 100L))
+                .expectNextMatches(dto -> dto.getId().equals(30L) && dto.getPosition() == 1)
+                .expectNextMatches(dto -> dto.getId().equals(10L) && dto.getPosition() == 2)
+                .expectNextMatches(dto -> dto.getId().equals(20L) && dto.getPosition() == 3)
+                .verifyComplete();
+    }
+
+    // --- QUEUE FROZEN TESTS ---
+
     @Test
     void addTrackToQueue_whenQueueFrozen_shouldThrowIllegalStateException() {
         when(loungeSessionManager.isQueueFrozen(1L)).thenReturn(true);
 
-        AddQueueEntryRequest request = AddQueueEntryRequest.builder().trackId(10L).build();
+        AddQueueEntryRequest request = new AddQueueEntryRequest(50L);
         StepVerifier.create(queueService.addTrackToQueue(1L, request, 100L))
                 .expectErrorMatches(ex -> ex instanceof IllegalStateException
                         && ex.getMessage().equals("Queue mutations are frozen while host is disconnected"))
@@ -525,5 +553,87 @@ class QueueServiceTest {
                 .verify();
 
         verify(djLoungeRepository, never()).findById(anyLong());
+    }
+
+    // --- F08 BROADCAST TESTS ---
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void addTrackToQueue_shouldBroadcastQueueUpdateWithReasonManual() {
+        DjLounge lounge = createLounge(1L, 100L, LoungeStatus.LIVE);
+        Track track = createTrack(50L);
+        AddQueueEntryRequest request = new AddQueueEntryRequest(50L);
+        QueueEntry savedEntry = createEntry(1L, 1L, 50L, 1, 0, 100L);
+
+        when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
+        when(trackRepository.findById(50L)).thenReturn(Mono.just(track));
+        when(queueEntryRepository.existsByLoungeIdAndTrackId(1L, 50L)).thenReturn(Mono.just(false));
+        when(queueEntryRepository.findByLoungeIdOrderByPositionAsc(1L)).thenReturn(Flux.just(savedEntry));
+        when(queueEntryRepository.save(any(QueueEntry.class))).thenReturn(Mono.just(savedEntry));
+
+        StepVerifier.create(queueService.addTrackToQueue(1L, request, 100L))
+                .expectNextCount(1)
+                .verifyComplete();
+
+        ArgumentCaptor<WsEventEnvelope<?>> captor = ArgumentCaptor.forClass(WsEventEnvelope.class);
+        verify(loungeSessionManager).broadcast(eq(1L), captor.capture());
+
+        WsEventEnvelope<?> envelope = captor.getValue();
+        assertThat(envelope.getEvent()).isEqualTo("lounge.queue.update");
+        assertThat(envelope.getPayload()).isInstanceOf(WsQueueUpdatePayload.class);
+        WsQueueUpdatePayload payload = (WsQueueUpdatePayload) envelope.getPayload();
+        assertThat(payload.getReason()).isEqualTo("manual");
+        assertThat(payload.getQueue()).hasSize(1);
+        assertThat(payload.getQueue().get(0).getTrackId()).isEqualTo(50L);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void removeQueueEntry_shouldBroadcastQueueUpdateWithReasonManual() {
+        DjLounge lounge = createLounge(1L, 100L, LoungeStatus.LIVE);
+        QueueEntry entry = createEntry(5L, 1L, 50L, 1, 0, 100L);
+
+        when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
+        when(queueEntryRepository.findByIdAndLoungeId(5L, 1L)).thenReturn(Mono.just(entry));
+        when(queueEntryRepository.delete(entry)).thenReturn(Mono.empty());
+        when(queueEntryRepository.findByLoungeIdOrderByPositionAsc(1L)).thenReturn(Flux.empty());
+
+        StepVerifier.create(queueService.removeQueueEntry(1L, 5L, 100L))
+                .verifyComplete();
+
+        ArgumentCaptor<WsEventEnvelope<?>> captor = ArgumentCaptor.forClass(WsEventEnvelope.class);
+        verify(loungeSessionManager).broadcast(eq(1L), captor.capture());
+
+        WsEventEnvelope<?> envelope = captor.getValue();
+        assertThat(envelope.getEvent()).isEqualTo("lounge.queue.update");
+        WsQueueUpdatePayload payload = (WsQueueUpdatePayload) envelope.getPayload();
+        assertThat(payload.getReason()).isEqualTo("manual");
+        assertThat(payload.getQueue()).isEmpty();
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void reorderQueueEntry_shouldBroadcastQueueUpdateWithReasonManual() {
+        DjLounge lounge = createLounge(1L, 100L, LoungeStatus.LIVE);
+        QueueEntry e1 = createEntry(10L, 1L, 100L, 1, 0, 100L);
+        QueueEntry e2 = createEntry(20L, 1L, 200L, 2, 0, 100L);
+
+        when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
+        when(queueEntryRepository.findByLoungeIdOrderByPositionAsc(1L))
+                .thenReturn(Flux.just(e1, e2))
+                .thenReturn(Flux.just(e2, e1));
+        when(queueEntryRepository.saveAll(any(Iterable.class))).thenAnswer(inv -> Flux.fromIterable(inv.getArgument(0)));
+
+        StepVerifier.create(queueService.reorderQueueEntry(1L, 20L, 1, 100L))
+                .expectNextCount(2)
+                .verifyComplete();
+
+        ArgumentCaptor<WsEventEnvelope<?>> captor = ArgumentCaptor.forClass(WsEventEnvelope.class);
+        verify(loungeSessionManager).broadcast(eq(1L), captor.capture());
+
+        WsEventEnvelope<?> envelope = captor.getValue();
+        assertThat(envelope.getEvent()).isEqualTo("lounge.queue.update");
+        WsQueueUpdatePayload payload = (WsQueueUpdatePayload) envelope.getPayload();
+        assertThat(payload.getReason()).isEqualTo("manual");
     }
 }

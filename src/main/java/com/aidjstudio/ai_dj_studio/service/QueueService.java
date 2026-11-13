@@ -2,6 +2,8 @@ package com.aidjstudio.ai_dj_studio.service;
 
 import com.aidjstudio.ai_dj_studio.dto.queue.AddQueueEntryRequest;
 import com.aidjstudio.ai_dj_studio.dto.queue.QueueEntryResponse;
+import com.aidjstudio.ai_dj_studio.dto.websocket.WsEventEnvelope;
+import com.aidjstudio.ai_dj_studio.dto.websocket.WsQueueUpdatePayload;
 import com.aidjstudio.ai_dj_studio.entity.DjLounge;
 import com.aidjstudio.ai_dj_studio.entity.LoungeStatus;
 import com.aidjstudio.ai_dj_studio.entity.QueueEntry;
@@ -16,7 +18,9 @@ import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.time.Instant;
 import java.util.Comparator;
+import java.util.List;
 
 @Service
 @RequiredArgsConstructor
@@ -27,6 +31,7 @@ public class QueueService {
     private final TrackRepository trackRepository;
     private final LoungeParticipantRepository loungeParticipantRepository;
     private final LoungeSessionManager loungeSessionManager;
+    private final LoungeQueueMutationSerializer mutationSerializer;
 
     public Flux<QueueEntryResponse> getQueue(Long loungeId) {
         return findLounge(loungeId)
@@ -35,6 +40,17 @@ public class QueueService {
     }
 
     public Mono<QueueEntryResponse> addTrackToQueue(
+            Long loungeId,
+            AddQueueEntryRequest request,
+            Long authenticatedUserId
+    ) {
+        return mutationSerializer.executeSerialized(loungeId, () ->
+                doAddTrackToQueue(loungeId, request, authenticatedUserId)
+                        .flatMap(response -> broadcastQueueUpdate(loungeId, "manual").thenReturn(response))
+        );
+    }
+
+    private Mono<QueueEntryResponse> doAddTrackToQueue(
             Long loungeId,
             AddQueueEntryRequest request,
             Long authenticatedUserId
@@ -74,6 +90,18 @@ public class QueueService {
             Long queueEntryId,
             Long authenticatedUserId
     ) {
+        return mutationSerializer.executeSerialized(loungeId, () ->
+                doRemoveQueueEntry(loungeId, queueEntryId, authenticatedUserId)
+                        .then(Mono.defer(() -> broadcastQueueUpdate(loungeId, "manual")))
+                        .then()
+        );
+    }
+
+    private Mono<Void> doRemoveQueueEntry(
+            Long loungeId,
+            Long queueEntryId,
+            Long authenticatedUserId
+    ) {
         if (loungeSessionManager.isQueueFrozen(loungeId)) {
             return Mono.error(new IllegalStateException("Queue mutations are frozen while host is disconnected"));
         }
@@ -106,6 +134,20 @@ public class QueueService {
     }
 
     public Flux<QueueEntryResponse> reorderQueueEntry(
+            Long loungeId,
+            Long queueEntryId,
+            Integer targetPosition,
+            Long authenticatedUserId
+    ) {
+        return mutationSerializer.executeSerializedFlux(loungeId, () ->
+                doReorderQueueEntry(loungeId, queueEntryId, targetPosition, authenticatedUserId)
+                        .collectList()
+                        .flatMap(savedList -> broadcastQueueUpdate(loungeId, "manual").thenReturn(savedList))
+                        .flatMapMany(Flux::fromIterable)
+        );
+    }
+
+    private Flux<QueueEntryResponse> doReorderQueueEntry(
             Long loungeId,
             Long queueEntryId,
             Integer targetPosition,
@@ -156,7 +198,7 @@ public class QueueService {
                                 }
 
                                 return queueEntryRepository.saveAll(entries)
-                                         .collectList()
+                                        .collectList()
                                         .flatMapMany(savedList -> {
                                             savedList.sort(Comparator.comparing(QueueEntry::getPosition));
                                             return Flux.fromIterable(savedList);
@@ -172,6 +214,29 @@ public class QueueService {
             Long authenticatedUserId
     ) {
         return reorderQueueEntry(loungeId, queueEntryId, 1, authenticatedUserId);
+    }
+
+    public Mono<List<QueueEntryResponse>> broadcastQueueUpdate(Long loungeId, String reason) {
+        return queueEntryRepository.findByLoungeIdOrderByPositionAsc(loungeId)
+                .map(this::toResponseDto)
+                .collectList()
+                .doOnNext(entries -> {
+                    WsQueueUpdatePayload payload = WsQueueUpdatePayload.builder()
+                            .loungeId(loungeId)
+                            .reason(reason)
+                            .queue(entries)
+                            .nextUp(entries)
+                            .build();
+
+                    WsEventEnvelope<WsQueueUpdatePayload> envelope = WsEventEnvelope.<WsQueueUpdatePayload>builder()
+                            .event("lounge.queue.update")
+                            .loungeId(loungeId)
+                            .payload(payload)
+                            .ts(Instant.now())
+                            .build();
+
+                    loungeSessionManager.broadcast(loungeId, envelope);
+                });
     }
 
     private Mono<DjLounge> findLounge(Long loungeId) {
