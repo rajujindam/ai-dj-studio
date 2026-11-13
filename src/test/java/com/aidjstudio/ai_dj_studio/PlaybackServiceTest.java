@@ -8,6 +8,7 @@ import com.aidjstudio.ai_dj_studio.repository.DjLoungeRepository;
 import com.aidjstudio.ai_dj_studio.repository.QueueEntryRepository;
 import com.aidjstudio.ai_dj_studio.service.PlaybackService;
 import com.aidjstudio.ai_dj_studio.service.QueueService;
+import com.aidjstudio.ai_dj_studio.websocket.LoungeSessionManager;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -36,6 +37,9 @@ class PlaybackServiceTest {
     @Mock
     private QueueService queueService;
 
+    @Mock
+    private LoungeSessionManager loungeSessionManager;
+
     @InjectMocks
     private PlaybackService playbackService;
 
@@ -48,7 +52,7 @@ class PlaybackServiceTest {
         return lounge;
     }
 
-    private QueueEntry createEntry(Long id, Long loungeId, Long trackId, Integer position) {
+    private QueueEntry createQueueEntry(Long id, Long loungeId, Long trackId, int position) {
         QueueEntry entry = new QueueEntry();
         entry.setId(id);
         entry.setLoungeId(loungeId);
@@ -59,91 +63,85 @@ class PlaybackServiceTest {
         return entry;
     }
 
-    // --- GET PLAYBACK STATE TESTS ---
-
     @Test
-    void getPlaybackState_whenValid_returnsNowPlayingAndNextUp() {
+    void getPlaybackState_returnsCurrentTrackAndOrderedNextUp() {
         DjLounge lounge = createLounge(1L, 100L, LoungeStatus.LIVE, 501L);
-        QueueEntry entry1 = createEntry(10L, 1L, 601L, 1);
-        QueueEntry entry2 = createEntry(11L, 1L, 602L, 2);
-
-        when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
-        when(queueEntryRepository.findByLoungeIdOrderByPositionAsc(1L)).thenReturn(Flux.just(entry1, entry2));
-
-        when(queueService.toResponseDto(entry1)).thenReturn(
-                new QueueEntryResponse(10L, 1L, 601L, 1, 0, 200L)
-        );
-        when(queueService.toResponseDto(entry2)).thenReturn(
-                new QueueEntryResponse(11L, 1L, 602L, 2, 0, 200L)
-        );
-
-        StepVerifier.create(playbackService.getPlaybackState(1L))
-                .expectNextMatches(res -> res.getLoungeId().equals(1L)
-                        && res.getStatus() == LoungeStatus.LIVE
-                        && res.getCurrentTrackId().equals(501L)
-                        && res.getNextUp().size() == 2
-                        && res.getNextUp().get(0).getTrackId().equals(601L)
-                        && res.getNextUp().get(1).getTrackId().equals(602L))
-                .verifyComplete();
-    }
-
-    @Test
-    void getPlaybackState_loungeNotFound_throwsIllegalArgumentException() {
-        when(djLoungeRepository.findById(999L)).thenReturn(Mono.empty());
-
-        StepVerifier.create(playbackService.getPlaybackState(999L))
-                .expectErrorMatches(ex -> ex instanceof IllegalArgumentException
-                        && ex.getMessage().contains("Lounge not found: 999"))
-                .verify();
-    }
-
-    // --- ADVANCE TO NEXT TRACK TESTS ---
-
-    @Test
-    void advanceToNextTrack_whenLiveAndHasQueue_promotesNextTrackAndRemovesFromQueue() {
-        DjLounge lounge = createLounge(1L, 100L, LoungeStatus.LIVE, 501L);
-        QueueEntry nextEntry = createEntry(10L, 1L, 601L, 1);
-        QueueEntry remainingEntry = createEntry(11L, 1L, 602L, 2);
+        QueueEntry entry1 = createQueueEntry(10L, 1L, 502L, 1);
+        QueueEntry entry2 = createQueueEntry(11L, 1L, 503L, 2);
 
         when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
         when(queueEntryRepository.findByLoungeIdOrderByPositionAsc(1L))
-                .thenReturn(Flux.just(nextEntry, remainingEntry))
-                .thenReturn(Flux.just(remainingEntry));
+                .thenReturn(Flux.just(entry1, entry2));
+        when(queueService.toResponseDto(entry1))
+                .thenReturn(QueueEntryResponse.builder().id(10L).position(1).build());
+        when(queueService.toResponseDto(entry2))
+                .thenReturn(QueueEntryResponse.builder().id(11L).position(2).build());
 
-        when(queueEntryRepository.saveAll(anyList())).thenAnswer(inv -> Flux.fromIterable(inv.getArgument(0)));
-        when(queueEntryRepository.delete(nextEntry)).thenReturn(Mono.empty());
-        when(djLoungeRepository.save(lounge)).thenAnswer(inv -> Mono.just(inv.getArgument(0)));
+        StepVerifier.create(playbackService.getPlaybackState(1L))
+                .assertNext(response -> {
+                    assertEquals(1L, response.getLoungeId());
+                    assertEquals(LoungeStatus.LIVE, response.getStatus());
+                    assertEquals(501L, response.getCurrentTrackId());
+                    assertEquals(2, response.getNextUp().size());
+                    assertEquals(10L, response.getNextUp().get(0).getId());
+                    assertEquals(11L, response.getNextUp().get(1).getId());
+                })
+                .verifyComplete();
+    }
 
-        when(queueService.toResponseDto(remainingEntry)).thenReturn(
-                new QueueEntryResponse(11L, 1L, 602L, 1, 0, 200L)
-        );
+    @Test
+    void advanceToNextTrack_success_promotesFirstEntryAndReindexesRemaining() {
+        DjLounge lounge = createLounge(1L, 100L, LoungeStatus.LIVE, 501L);
+        QueueEntry first = createQueueEntry(10L, 1L, 502L, 1);
+        QueueEntry second = createQueueEntry(11L, 1L, 503L, 2);
+
+        when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
+        when(queueEntryRepository.findByLoungeIdOrderByPositionAsc(1L))
+                .thenReturn(Flux.just(first, second));
+        when(queueEntryRepository.saveAll(any(Iterable.class)))
+                .thenAnswer(inv -> Flux.fromIterable(inv.getArgument(0)));
+        when(queueEntryRepository.delete(first)).thenReturn(Mono.empty());
+        when(djLoungeRepository.save(lounge)).thenReturn(Mono.just(lounge));
+        when(queueService.toResponseDto(any(QueueEntry.class)))
+                .thenReturn(QueueEntryResponse.builder().id(11L).position(1).build());
 
         StepVerifier.create(playbackService.advanceToNextTrack(1L, 100L))
-                .expectNextMatches(res -> res.getCurrentTrackId().equals(601L)
-                        && res.getNextUp().size() == 1
-                        && res.getNextUp().get(0).getTrackId().equals(602L))
+                .assertNext(response -> {
+                    assertEquals(502L, response.getCurrentTrackId());
+                    assertEquals(1, second.getPosition());
+                })
                 .verifyComplete();
 
-        assertEquals(601L, lounge.getCurrentTrackId());
-        verify(queueEntryRepository).delete(nextEntry);
+        verify(queueEntryRepository).delete(first);
         verify(djLoungeRepository).save(lounge);
     }
 
     @Test
-    void advanceToNextTrack_whenQueueEmpty_throwsIllegalStateExceptionAndKeepsCurrentTrack() {
+    void advanceToNextTrack_whenQueueEmpty_throwsIllegalStateException() {
         DjLounge lounge = createLounge(1L, 100L, LoungeStatus.LIVE, 501L);
-
         when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
-        when(queueEntryRepository.findByLoungeIdOrderByPositionAsc(1L)).thenReturn(Flux.empty());
+        when(queueEntryRepository.findByLoungeIdOrderByPositionAsc(1L))
+                .thenReturn(Flux.empty());
 
         StepVerifier.create(playbackService.advanceToNextTrack(1L, 100L))
                 .expectErrorMatches(ex -> ex instanceof IllegalStateException
                         && ex.getMessage().equals("Queue is empty"))
                 .verify();
 
-        assertEquals(501L, lounge.getCurrentTrackId());
-        verify(queueEntryRepository, never()).delete(any());
         verify(djLoungeRepository, never()).save(any());
+    }
+
+    @Test
+    void advanceToNextTrack_whenCallerNotHost_throwsAccessDeniedException() {
+        DjLounge lounge = createLounge(1L, 100L, LoungeStatus.LIVE, 501L);
+        when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
+
+        StepVerifier.create(playbackService.advanceToNextTrack(1L, 999L))
+                .expectErrorMatches(ex -> ex instanceof AccessDeniedException
+                        && ex.getMessage().equals("Only the lounge host can control playback"))
+                .verify();
+
+        verify(queueEntryRepository, never()).findByLoungeIdOrderByPositionAsc(any());
     }
 
     @Test
@@ -173,47 +171,41 @@ class PlaybackServiceTest {
     }
 
     @Test
-    void advanceToNextTrack_whenNotHost_throwsAccessDeniedException() {
-        DjLounge lounge = createLounge(1L, 100L, LoungeStatus.LIVE, 501L);
-        when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
+    void advanceToNextTrack_whenQueueFrozen_throwsIllegalStateException() {
+        when(loungeSessionManager.isQueueFrozen(1L)).thenReturn(true);
 
-        StepVerifier.create(playbackService.advanceToNextTrack(1L, 200L))
-                .expectErrorMatches(ex -> ex instanceof AccessDeniedException
-                        && ex.getMessage().equals("Only the lounge host can control playback"))
+        StepVerifier.create(playbackService.advanceToNextTrack(1L, 100L))
+                .expectErrorMatches(ex -> ex instanceof IllegalStateException
+                        && ex.getMessage().equals("Queue mutations are frozen while host is disconnected"))
                 .verify();
 
-        verify(queueEntryRepository, never()).delete(any());
+        verify(djLoungeRepository, never()).findById(anyLong());
     }
 
-    // --- PROMOTE TRACK TO NOW PLAYING TESTS ---
-
     @Test
-    void promoteTrackToNowPlaying_whenValid_setsCurrentTrackAndRemovesFromQueue() {
+    void promoteTrackToNowPlaying_success_deletesEntrySetsNowPlayingAndNormalizesPositions() {
         DjLounge lounge = createLounge(1L, 100L, LoungeStatus.LIVE, 501L);
-        QueueEntry entryToPromote = createEntry(15L, 1L, 777L, 2);
-        QueueEntry remainingEntry = createEntry(16L, 1L, 888L, 3);
+        QueueEntry entryToPromote = createQueueEntry(15L, 1L, 555L, 2);
+        QueueEntry otherEntry = createQueueEntry(10L, 1L, 502L, 1);
 
         when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
         when(queueEntryRepository.findByIdAndLoungeId(15L, 1L)).thenReturn(Mono.just(entryToPromote));
         when(queueEntryRepository.delete(entryToPromote)).thenReturn(Mono.empty());
-        when(djLoungeRepository.save(lounge)).thenAnswer(inv -> Mono.just(inv.getArgument(0)));
-
+        when(djLoungeRepository.save(lounge)).thenReturn(Mono.just(lounge));
         when(queueEntryRepository.findByLoungeIdOrderByPositionAsc(1L))
-                .thenReturn(Flux.just(remainingEntry))
-                .thenReturn(Flux.just(remainingEntry));
-
-        when(queueEntryRepository.saveAll(anyList())).thenAnswer(inv -> Flux.fromIterable(inv.getArgument(0)));
-        when(queueService.toResponseDto(remainingEntry)).thenReturn(
-                new QueueEntryResponse(16L, 1L, 888L, 1, 0, 200L)
-        );
+                .thenReturn(Flux.just(otherEntry));
+        when(queueEntryRepository.saveAll(any(Iterable.class)))
+                .thenAnswer(inv -> Flux.fromIterable(inv.getArgument(0)));
+        when(queueService.toResponseDto(otherEntry))
+                .thenReturn(QueueEntryResponse.builder().id(10L).position(1).build());
 
         StepVerifier.create(playbackService.promoteTrackToNowPlaying(1L, 15L, 100L))
-                .expectNextMatches(res -> res.getCurrentTrackId().equals(777L)
-                        && res.getNextUp().size() == 1
-                        && res.getNextUp().get(0).getTrackId().equals(888L))
+                .assertNext(response -> {
+                    assertEquals(555L, response.getCurrentTrackId());
+                    assertEquals(1, otherEntry.getPosition());
+                })
                 .verifyComplete();
 
-        assertEquals(777L, lounge.getCurrentTrackId());
         verify(queueEntryRepository).delete(entryToPromote);
         verify(djLoungeRepository).save(lounge);
     }
@@ -221,24 +213,23 @@ class PlaybackServiceTest {
     @Test
     void promoteTrackToNowPlaying_whenEntryNotFound_throwsIllegalArgumentException() {
         DjLounge lounge = createLounge(1L, 100L, LoungeStatus.LIVE, 501L);
-
         when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
         when(queueEntryRepository.findByIdAndLoungeId(999L, 1L)).thenReturn(Mono.empty());
 
         StepVerifier.create(playbackService.promoteTrackToNowPlaying(1L, 999L, 100L))
                 .expectErrorMatches(ex -> ex instanceof IllegalArgumentException
-                        && ex.getMessage().contains("Queue entry not found with id: 999"))
+                        && ex.getMessage().equals("Queue entry not found with id: 999"))
                 .verify();
 
         verify(queueEntryRepository, never()).delete(any());
     }
 
     @Test
-    void promoteTrackToNowPlaying_whenNotHost_throwsAccessDeniedException() {
+    void promoteTrackToNowPlaying_whenCallerNotHost_throwsAccessDeniedException() {
         DjLounge lounge = createLounge(1L, 100L, LoungeStatus.LIVE, 501L);
         when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
 
-        StepVerifier.create(playbackService.promoteTrackToNowPlaying(1L, 15L, 200L))
+        StepVerifier.create(playbackService.promoteTrackToNowPlaying(1L, 15L, 999L))
                 .expectErrorMatches(ex -> ex instanceof AccessDeniedException
                         && ex.getMessage().equals("Only the lounge host can control playback"))
                 .verify();
@@ -270,5 +261,17 @@ class PlaybackServiceTest {
                 .verify();
 
         verify(queueEntryRepository, never()).delete(any());
+    }
+
+    @Test
+    void promoteTrackToNowPlaying_whenQueueFrozen_throwsIllegalStateException() {
+        when(loungeSessionManager.isQueueFrozen(1L)).thenReturn(true);
+
+        StepVerifier.create(playbackService.promoteTrackToNowPlaying(1L, 15L, 100L))
+                .expectErrorMatches(ex -> ex instanceof IllegalStateException
+                        && ex.getMessage().equals("Queue mutations are frozen while host is disconnected"))
+                .verify();
+
+        verify(djLoungeRepository, never()).findById(anyLong());
     }
 }

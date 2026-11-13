@@ -288,4 +288,37 @@ class LoungeMembershipServiceTest {
         verify(loungeParticipantRepository)
                 .save(any(LoungeParticipant.class));
     }
+
+    @Test
+    void joinLoungeIdempotent_whenAlreadyActive_returnsExistingWithoutSavingNewRecord() {
+        DjLounge lounge = createLounge(LoungeStatus.LIVE);
+        LoungeParticipant existing = createParticipant(1L, 200L, LoungeParticipantRole.LISTENER);
+
+        when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
+        when(loungeParticipantRepository.findByLoungeIdAndUserIdAndLeftAtIsNull(1L, 200L))
+                .thenReturn(Mono.just(existing));
+
+        StepVerifier.create(loungeMembershipService.joinLoungeIdempotent(1L, 200L))
+                .expectNextMatches(p -> p.getId().equals(1L) && p.getUserId().equals(200L))
+                .verifyComplete();
+
+        verify(loungeParticipantRepository, never()).save(any());
+    }
+
+    @Test
+    void joinLoungeIdempotent_whenNewParticipant_createsAndSavesNewRecord() {
+        DjLounge lounge = createLounge(LoungeStatus.LIVE);
+
+        when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
+        when(loungeParticipantRepository.findByLoungeIdAndUserIdAndLeftAtIsNull(1L, 200L))
+                .thenReturn(Mono.empty());
+        when(loungeParticipantRepository.save(any(LoungeParticipant.class)))
+                .thenAnswer(inv -> Mono.just(inv.getArgument(0)));
+
+        StepVerifier.create(loungeMembershipService.joinLoungeIdempotent(1L, 200L))
+                .expectNextMatches(p -> p.getUserId().equals(200L) && p.getRole() == LoungeParticipantRole.LISTENER)
+                .verifyComplete();
+
+        verify(loungeParticipantRepository).save(any(LoungeParticipant.class));
+    }
 }

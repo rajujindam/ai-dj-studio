@@ -6,6 +6,8 @@ import com.aidjstudio.ai_dj_studio.entity.LoungeParticipantRole;
 import com.aidjstudio.ai_dj_studio.entity.LoungeStatus;
 import com.aidjstudio.ai_dj_studio.repository.DjLoungeRepository;
 import com.aidjstudio.ai_dj_studio.repository.LoungeParticipantRepository;
+import com.aidjstudio.ai_dj_studio.repository.QueueEntryRepository;
+import com.aidjstudio.ai_dj_studio.service.QueueService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -47,6 +49,12 @@ class LoungeWebSocketHandlerTest {
     private LoungeParticipantRepository loungeParticipantRepository;
 
     @Mock
+    private QueueEntryRepository queueEntryRepository;
+
+    @Mock
+    private QueueService queueService;
+
+    @Mock
     private WebSocketSession session;
 
     private LoungeSessionManager loungeSessionManager;
@@ -55,16 +63,21 @@ class LoungeWebSocketHandlerTest {
 
     @BeforeEach
     void setUp() {
-        loungeSessionManager = new LoungeSessionManager();
         objectMapper = new ObjectMapper();
+        loungeSessionManager = new LoungeSessionManager(objectMapper);
 
         handler = new LoungeWebSocketHandler(
                 reactiveJwtDecoder,
                 djLoungeRepository,
                 loungeParticipantRepository,
+                queueEntryRepository,
+                queueService,
                 loungeSessionManager,
                 objectMapper
         );
+
+        lenient().when(queueEntryRepository.findByLoungeIdOrderByPositionAsc(any()))
+                .thenReturn(Flux.empty());
     }
 
     private HandshakeInfo createHandshakeInfo(String uriString, HttpHeaders headers) {
@@ -81,12 +94,13 @@ class LoungeWebSocketHandlerTest {
     }
 
     @Test
-    void handle_validTokenInQuery_asActiveParticipant_shouldConnectAndReceiveAck() {
+    void handle_validTokenInQuery_asActiveParticipant_shouldConnectAndReceiveAckAndSnapshot() {
         Long loungeId = 1L;
         Long userId = 200L;
         String token = "valid-participant-token";
 
         HandshakeInfo handshake = createHandshakeInfo("/ws/lounges/1?token=" + token, null);
+        when(session.getId()).thenReturn("sess-200");
         when(session.getHandshakeInfo()).thenReturn(handshake);
         when(session.textMessage(anyString())).thenAnswer(inv -> createTextMessage(inv.getArgument(0)));
         when(session.send(any())).thenReturn(Mono.empty());
@@ -120,13 +134,20 @@ class LoungeWebSocketHandlerTest {
                     assertThat(payload).contains("\"role\":\"LISTENER\"");
                     assertThat(payload).contains("\"userId\":200");
                 })
-                .verifyComplete();
+                .assertNext(msg -> {
+                    String payload = msg.getPayloadAsText();
+                    assertThat(payload).contains("lounge.snapshot");
+                    assertThat(payload).contains("\"status\":\"LIVE\"");
+                    assertThat(payload).contains("\"loungeId\":1");
+                })
+                .thenCancel()
+                .verify();
 
         verify(session, never()).close(any(CloseStatus.class));
     }
 
     @Test
-    void handle_validTokenInAuthorizationHeader_asHost_shouldConnectWithHostRole() {
+    void handle_validTokenInAuthorizationHeader_asHost_shouldConnectWithHostRoleAndSnapshot() {
         Long loungeId = 1L;
         Long hostUserId = 100L;
         String token = "valid-host-token";
@@ -135,6 +156,7 @@ class LoungeWebSocketHandlerTest {
         headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + token);
         HandshakeInfo handshake = createHandshakeInfo("/ws/lounges/1", headers);
 
+        when(session.getId()).thenReturn("sess-100");
         when(session.getHandshakeInfo()).thenReturn(handshake);
         when(session.textMessage(anyString())).thenAnswer(inv -> createTextMessage(inv.getArgument(0)));
         when(session.send(any())).thenReturn(Mono.empty());
@@ -162,7 +184,13 @@ class LoungeWebSocketHandlerTest {
                     assertThat(payload).contains("\"role\":\"HOST\"");
                     assertThat(payload).contains("\"userId\":100");
                 })
-                .verifyComplete();
+                .assertNext(msg -> {
+                    String payload = msg.getPayloadAsText();
+                    assertThat(payload).contains("lounge.snapshot");
+                    assertThat(payload).contains("\"hostUserId\":100");
+                })
+                .thenCancel()
+                .verify();
 
         verify(session, never()).close(any(CloseStatus.class));
         verify(loungeParticipantRepository, never()).findByLoungeIdAndUserIdAndLeftAtIsNull(any(), any());

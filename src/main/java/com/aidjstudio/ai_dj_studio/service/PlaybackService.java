@@ -7,6 +7,7 @@ import com.aidjstudio.ai_dj_studio.entity.LoungeStatus;
 import com.aidjstudio.ai_dj_studio.entity.QueueEntry;
 import com.aidjstudio.ai_dj_studio.repository.DjLoungeRepository;
 import com.aidjstudio.ai_dj_studio.repository.QueueEntryRepository;
+import com.aidjstudio.ai_dj_studio.websocket.LoungeSessionManager;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
@@ -22,6 +23,7 @@ public class PlaybackService {
     private final DjLoungeRepository djLoungeRepository;
     private final QueueEntryRepository queueEntryRepository;
     private final QueueService queueService;
+    private final LoungeSessionManager loungeSessionManager;
 
     public Mono<LoungePlaybackStateResponse> getPlaybackState(Long loungeId) {
         return findLounge(loungeId)
@@ -37,6 +39,10 @@ public class PlaybackService {
     }
 
     public Mono<LoungePlaybackStateResponse> advanceToNextTrack(Long loungeId, Long authenticatedUserId) {
+        if (loungeSessionManager.isQueueFrozen(loungeId)) {
+            return Mono.error(new IllegalStateException("Queue mutations are frozen while host is disconnected"));
+        }
+
         return findLounge(loungeId)
                 .flatMap(lounge -> {
                     if (lounge.getStatus() == LoungeStatus.ENDED) {
@@ -78,6 +84,10 @@ public class PlaybackService {
             Long queueEntryId,
             Long authenticatedUserId
     ) {
+        if (loungeSessionManager.isQueueFrozen(loungeId)) {
+            return Mono.error(new IllegalStateException("Queue mutations are frozen while host is disconnected"));
+        }
+
         return findLounge(loungeId)
                 .flatMap(lounge -> {
                     if (lounge.getStatus() == LoungeStatus.ENDED) {

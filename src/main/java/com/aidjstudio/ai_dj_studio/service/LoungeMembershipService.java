@@ -71,6 +71,50 @@ public class LoungeMembershipService {
                 });
     }
 
+    public Mono<LoungeParticipant> joinLoungeIdempotent(
+            Long loungeId,
+            Long authenticatedUserId
+    ) {
+        return findLounge(loungeId)
+                .flatMap(lounge -> {
+                    if (lounge.getStatus() == LoungeStatus.ENDED) {
+                        return Mono.error(new IllegalStateException(
+                                "Cannot join an ended lounge"
+                        ));
+                    }
+
+                    if (lounge.getHostUserId().equals(authenticatedUserId)) {
+                        return Mono.error(new IllegalStateException(
+                                "The lounge host does not need participant membership"
+                        ));
+                    }
+
+                    return loungeParticipantRepository
+                            .findByLoungeIdAndUserIdAndLeftAtIsNull(
+                                    loungeId,
+                                    authenticatedUserId
+                            )
+                            .switchIfEmpty(Mono.defer(() -> {
+                                LoungeParticipant participant =
+                                        new LoungeParticipant();
+
+                                participant.setLoungeId(loungeId);
+                                participant.setUserId(authenticatedUserId);
+                                participant.setRole(
+                                        LoungeParticipantRole.LISTENER
+                                );
+                                participant.setJoinedAt(
+                                        LocalDateTime.now()
+                                );
+                                participant.setLeftAt(null);
+
+                                return loungeParticipantRepository.save(
+                                        participant
+                                );
+                            }));
+                });
+    }
+
     public Mono<LoungeParticipant> leaveLounge(
             Long loungeId,
             Long authenticatedUserId
@@ -86,7 +130,7 @@ public class LoungeMembershipService {
                                         new IllegalStateException(
                                                 "User is not an active participant"
                                         )
-                                ))
+                                			))
                                 .flatMap(participant -> {
                                     participant.setLeftAt(
                                             LocalDateTime.now()
@@ -107,6 +151,7 @@ public class LoungeMembershipService {
                         )
                 ));
     }
+
     public Flux<LoungeParticipant> getActiveParticipants(Long loungeId) {
         return findLounge(loungeId)
                 .flatMapMany(lounge ->

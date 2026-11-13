@@ -7,6 +7,7 @@ import com.aidjstudio.ai_dj_studio.repository.LoungeParticipantRepository;
 import com.aidjstudio.ai_dj_studio.repository.QueueEntryRepository;
 import com.aidjstudio.ai_dj_studio.repository.TrackRepository;
 import com.aidjstudio.ai_dj_studio.service.QueueService;
+import com.aidjstudio.ai_dj_studio.websocket.LoungeSessionManager;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -37,6 +38,9 @@ class QueueServiceTest {
 
     @Mock
     private LoungeParticipantRepository loungeParticipantRepository;
+
+    @Mock
+    private LoungeSessionManager loungeSessionManager;
 
     @InjectMocks
     private QueueService queueService;
@@ -484,5 +488,42 @@ class QueueServiceTest {
                 .expectNextMatches(dto -> dto.getId().equals(20L) && dto.getPosition() == 1)
                 .expectNextMatches(dto -> dto.getId().equals(10L) && dto.getPosition() == 2)
                 .verifyComplete();
+    }
+
+    @Test
+    void addTrackToQueue_whenQueueFrozen_shouldThrowIllegalStateException() {
+        when(loungeSessionManager.isQueueFrozen(1L)).thenReturn(true);
+
+        AddQueueEntryRequest request = AddQueueEntryRequest.builder().trackId(10L).build();
+        StepVerifier.create(queueService.addTrackToQueue(1L, request, 100L))
+                .expectErrorMatches(ex -> ex instanceof IllegalStateException
+                        && ex.getMessage().equals("Queue mutations are frozen while host is disconnected"))
+                .verify();
+
+        verify(djLoungeRepository, never()).findById(anyLong());
+    }
+
+    @Test
+    void removeQueueEntry_whenQueueFrozen_shouldThrowIllegalStateException() {
+        when(loungeSessionManager.isQueueFrozen(1L)).thenReturn(true);
+
+        StepVerifier.create(queueService.removeQueueEntry(1L, 10L, 100L))
+                .expectErrorMatches(ex -> ex instanceof IllegalStateException
+                        && ex.getMessage().equals("Queue mutations are frozen while host is disconnected"))
+                .verify();
+
+        verify(djLoungeRepository, never()).findById(anyLong());
+    }
+
+    @Test
+    void reorderQueueEntry_whenQueueFrozen_shouldThrowIllegalStateException() {
+        when(loungeSessionManager.isQueueFrozen(1L)).thenReturn(true);
+
+        StepVerifier.create(queueService.reorderQueueEntry(1L, 10L, 2, 100L))
+                .expectErrorMatches(ex -> ex instanceof IllegalStateException
+                        && ex.getMessage().equals("Queue mutations are frozen while host is disconnected"))
+                .verify();
+
+        verify(djLoungeRepository, never()).findById(anyLong());
     }
 }

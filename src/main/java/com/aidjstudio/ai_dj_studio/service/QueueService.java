@@ -9,6 +9,7 @@ import com.aidjstudio.ai_dj_studio.repository.DjLoungeRepository;
 import com.aidjstudio.ai_dj_studio.repository.LoungeParticipantRepository;
 import com.aidjstudio.ai_dj_studio.repository.QueueEntryRepository;
 import com.aidjstudio.ai_dj_studio.repository.TrackRepository;
+import com.aidjstudio.ai_dj_studio.websocket.LoungeSessionManager;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
@@ -25,6 +26,7 @@ public class QueueService {
     private final DjLoungeRepository djLoungeRepository;
     private final TrackRepository trackRepository;
     private final LoungeParticipantRepository loungeParticipantRepository;
+    private final LoungeSessionManager loungeSessionManager;
 
     public Flux<QueueEntryResponse> getQueue(Long loungeId) {
         return findLounge(loungeId)
@@ -37,6 +39,10 @@ public class QueueService {
             AddQueueEntryRequest request,
             Long authenticatedUserId
     ) {
+        if (loungeSessionManager.isQueueFrozen(loungeId)) {
+            return Mono.error(new IllegalStateException("Queue mutations are frozen while host is disconnected"));
+        }
+
         return findLounge(loungeId)
                 .flatMap(lounge -> {
                     if (lounge.getStatus() == LoungeStatus.ENDED) {
@@ -68,6 +74,10 @@ public class QueueService {
             Long queueEntryId,
             Long authenticatedUserId
     ) {
+        if (loungeSessionManager.isQueueFrozen(loungeId)) {
+            return Mono.error(new IllegalStateException("Queue mutations are frozen while host is disconnected"));
+        }
+
         return findLounge(loungeId)
                 .flatMap(lounge -> {
                     if (lounge.getStatus() == LoungeStatus.ENDED) {
@@ -101,6 +111,10 @@ public class QueueService {
             Integer targetPosition,
             Long authenticatedUserId
     ) {
+        if (loungeSessionManager.isQueueFrozen(loungeId)) {
+            return Flux.error(new IllegalStateException("Queue mutations are frozen while host is disconnected"));
+        }
+
         return findLounge(loungeId)
                 .flatMapMany(lounge -> {
                     if (lounge.getStatus() == LoungeStatus.ENDED) {
@@ -142,7 +156,7 @@ public class QueueService {
                                 }
 
                                 return queueEntryRepository.saveAll(entries)
-                                        .collectList()
+                                         .collectList()
                                         .flatMapMany(savedList -> {
                                             savedList.sort(Comparator.comparing(QueueEntry::getPosition));
                                             return Flux.fromIterable(savedList);
