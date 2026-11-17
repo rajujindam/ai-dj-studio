@@ -1,12 +1,14 @@
 package com.aidjstudio.ai_dj_studio;
 
 import com.aidjstudio.ai_dj_studio.dto.queue.AddQueueEntryRequest;
+import com.aidjstudio.ai_dj_studio.dto.queue.QueueEntryResponse;
 import com.aidjstudio.ai_dj_studio.dto.websocket.WsEventEnvelope;
 import com.aidjstudio.ai_dj_studio.dto.websocket.WsQueueUpdatePayload;
 import com.aidjstudio.ai_dj_studio.entity.*;
 import com.aidjstudio.ai_dj_studio.repository.DjLoungeRepository;
 import com.aidjstudio.ai_dj_studio.repository.LoungeParticipantRepository;
 import com.aidjstudio.ai_dj_studio.repository.QueueEntryRepository;
+import com.aidjstudio.ai_dj_studio.repository.QueueVoteRepository;
 import com.aidjstudio.ai_dj_studio.repository.TrackRepository;
 import com.aidjstudio.ai_dj_studio.service.LoungeQueueMutationSerializer;
 import com.aidjstudio.ai_dj_studio.service.QueueService;
@@ -52,6 +54,9 @@ class QueueServiceTest {
     @Mock
     private LoungeQueueMutationSerializer mutationSerializer;
 
+    @Mock
+    private QueueVoteRepository queueVoteRepository;
+
     @InjectMocks
     private QueueService queueService;
 
@@ -63,6 +68,8 @@ class QueueServiceTest {
                 .thenAnswer(inv -> ((java.util.function.Supplier<Flux<?>>) inv.getArgument(1)).get());
         lenient().when(queueEntryRepository.findByLoungeIdOrderByPositionAsc(any()))
                 .thenReturn(Flux.empty());
+        lenient().when(queueVoteRepository.deleteByQueueEntryId(any()))
+                .thenReturn(Mono.empty());
     }
 
     private DjLounge createLounge(Long loungeId, Long hostUserId, LoungeStatus status) {
@@ -335,6 +342,7 @@ class QueueServiceTest {
         StepVerifier.create(queueService.removeQueueEntry(1L, 5L, 100L))
                 .verifyComplete();
 
+        verify(queueVoteRepository).deleteByQueueEntryId(5L);
         verify(queueEntryRepository).delete(entry);
     }
 
@@ -350,6 +358,7 @@ class QueueServiceTest {
         StepVerifier.create(queueService.removeQueueEntry(1L, 5L, 200L))
                 .verifyComplete();
 
+        verify(queueVoteRepository).deleteByQueueEntryId(5L);
         verify(queueEntryRepository).delete(entry);
     }
 
@@ -635,5 +644,215 @@ class QueueServiceTest {
         assertThat(envelope.getEvent()).isEqualTo("lounge.queue.update");
         WsQueueUpdatePayload payload = (WsQueueUpdatePayload) envelope.getPayload();
         assertThat(payload.getReason()).isEqualTo("manual");
+    }
+
+    // --- F09 VOTE TESTS ---
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void voteQueueEntry_asHost_shouldIncrementVoteCount_andBroadcastQueueUpdateWithReasonVote() {
+        DjLounge lounge = createLounge(1L, 100L, LoungeStatus.LIVE);
+        QueueEntry entry = createEntry(10L, 1L, 501L, 1, 0, 200L);
+
+        when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
+        when(queueEntryRepository.findByIdAndLoungeId(10L, 1L)).thenReturn(Mono.just(entry));
+        when(queueVoteRepository.existsByQueueEntryIdAndUserId(10L, 100L)).thenReturn(Mono.just(false));
+        when(queueVoteRepository.save(any(QueueVote.class))).thenAnswer(inv -> Mono.just(inv.getArgument(0)));
+        when(queueEntryRepository.findByLoungeIdOrderByPositionAsc(1L))
+                .thenReturn(Flux.just(entry))
+                .thenReturn(Flux.just(entry));
+        when(queueEntryRepository.saveAll(any(Iterable.class))).thenAnswer(inv -> Flux.fromIterable(inv.getArgument(0)));
+
+        StepVerifier.create(queueService.voteQueueEntry(1L, 10L, 100L))
+                .expectNextMatches(dto -> dto.getId().equals(10L)
+                        && dto.getVoteCount() == 1
+                        && dto.getPosition() == 1)
+                .verifyComplete();
+
+        verify(queueVoteRepository).save(any(QueueVote.class));
+
+        ArgumentCaptor<WsEventEnvelope<?>> captor = ArgumentCaptor.forClass(WsEventEnvelope.class);
+        verify(loungeSessionManager).broadcast(eq(1L), captor.capture());
+
+        WsEventEnvelope<?> envelope = captor.getValue();
+        assertThat(envelope.getEvent()).isEqualTo("lounge.queue.update");
+        WsQueueUpdatePayload payload = (WsQueueUpdatePayload) envelope.getPayload();
+        assertThat(payload.getReason()).isEqualTo("vote");
+    }
+
+    @Test
+    void voteQueueEntry_asActiveParticipant_shouldSucceed() {
+        DjLounge lounge = createLounge(1L, 100L, LoungeStatus.LIVE);
+        LoungeParticipant participant = createParticipant(1L, 300L);
+        QueueEntry entry = createEntry(10L, 1L, 501L, 1, 0, 200L);
+
+        when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
+        when(loungeParticipantRepository.findByLoungeIdAndUserIdAndLeftAtIsNull(1L, 300L))
+                .thenReturn(Mono.just(participant));
+        when(queueEntryRepository.findByIdAndLoungeId(10L, 1L)).thenReturn(Mono.just(entry));
+        when(queueVoteRepository.existsByQueueEntryIdAndUserId(10L, 300L)).thenReturn(Mono.just(false));
+        when(queueVoteRepository.save(any(QueueVote.class))).thenAnswer(inv -> Mono.just(inv.getArgument(0)));
+        when(queueEntryRepository.findByLoungeIdOrderByPositionAsc(1L))
+                .thenReturn(Flux.just(entry))
+                .thenReturn(Flux.just(entry));
+        when(queueEntryRepository.saveAll(any(Iterable.class))).thenAnswer(inv -> Flux.fromIterable(inv.getArgument(0)));
+
+        StepVerifier.create(queueService.voteQueueEntry(1L, 10L, 300L))
+                .expectNextMatches(dto -> dto.getId().equals(10L)
+                        && dto.getVoteCount() == 1)
+                .verifyComplete();
+
+        verify(queueVoteRepository).save(any(QueueVote.class));
+    }
+
+    @Test
+    void voteQueueEntry_userNotActiveParticipant_shouldThrowAccessDeniedException() {
+        DjLounge lounge = createLounge(1L, 100L, LoungeStatus.LIVE);
+
+        when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
+        when(loungeParticipantRepository.findByLoungeIdAndUserIdAndLeftAtIsNull(1L, 999L))
+                .thenReturn(Mono.empty());
+
+        StepVerifier.create(queueService.voteQueueEntry(1L, 10L, 999L))
+                .expectErrorMatches(ex -> ex instanceof AccessDeniedException
+                        && ex.getMessage().equals("User is not an active participant of this lounge"))
+                .verify();
+
+        verify(queueVoteRepository, never()).save(any());
+        verify(queueEntryRepository, never()).saveAll(any(Iterable.class));
+    }
+
+    @Test
+    void voteQueueEntry_duplicateVote_shouldThrowIllegalStateExceptionWithExactMessage() {
+        DjLounge lounge = createLounge(1L, 100L, LoungeStatus.LIVE);
+        QueueEntry entry = createEntry(10L, 1L, 501L, 1, 1, 200L);
+
+        when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
+        when(queueEntryRepository.findByIdAndLoungeId(10L, 1L)).thenReturn(Mono.just(entry));
+        when(queueVoteRepository.existsByQueueEntryIdAndUserId(10L, 100L)).thenReturn(Mono.just(true));
+
+        StepVerifier.create(queueService.voteQueueEntry(1L, 10L, 100L))
+                .expectErrorMatches(ex -> ex instanceof IllegalStateException
+                        && ex.getMessage().equals("User has already voted for this track"))
+                .verify();
+
+        verify(queueVoteRepository, never()).save(any());
+        verify(queueEntryRepository, never()).saveAll(any(Iterable.class));
+    }
+
+    @Test
+    void voteQueueEntry_loungeNotFound_shouldThrowIllegalArgumentException() {
+        when(djLoungeRepository.findById(999L)).thenReturn(Mono.empty());
+
+        StepVerifier.create(queueService.voteQueueEntry(999L, 10L, 100L))
+                .expectErrorMatches(ex -> ex instanceof IllegalArgumentException
+                        && ex.getMessage().contains("Lounge not found: 999"))
+                .verify();
+
+        verify(queueVoteRepository, never()).save(any());
+    }
+
+    @Test
+    void voteQueueEntry_endedLounge_shouldThrowIllegalStateException() {
+        DjLounge lounge = createLounge(1L, 100L, LoungeStatus.ENDED);
+
+        when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
+
+        StepVerifier.create(queueService.voteQueueEntry(1L, 10L, 100L))
+                .expectErrorMatches(ex -> ex instanceof IllegalStateException
+                        && ex.getMessage().equals("Cannot modify queue of an ended lounge"))
+                .verify();
+
+        verify(queueVoteRepository, never()).save(any());
+    }
+
+    @Test
+    void voteQueueEntry_entryNotFound_shouldThrowIllegalArgumentException() {
+        DjLounge lounge = createLounge(1L, 100L, LoungeStatus.LIVE);
+
+        when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
+        when(queueEntryRepository.findByIdAndLoungeId(999L, 1L)).thenReturn(Mono.empty());
+
+        StepVerifier.create(queueService.voteQueueEntry(1L, 999L, 100L))
+                .expectErrorMatches(ex -> ex instanceof IllegalArgumentException
+                        && ex.getMessage().contains("Queue entry not found with id: 999"))
+                .verify();
+
+        verify(queueVoteRepository, never()).save(any());
+    }
+
+    @Test
+    void voteQueueEntry_whenQueueFrozen_shouldThrowIllegalStateException() {
+        when(loungeSessionManager.isQueueFrozen(1L)).thenReturn(true);
+
+        StepVerifier.create(queueService.voteQueueEntry(1L, 10L, 100L))
+                .expectErrorMatches(ex -> ex instanceof IllegalStateException
+                        && ex.getMessage().equals("Queue mutations are frozen while host is disconnected"))
+                .verify();
+
+        verify(djLoungeRepository, never()).findById(anyLong());
+    }
+
+    @Test
+    void voteQueueEntry_reordersQueue_whenTrackGetsMoreVotesThanPrecedingTracks() {
+        DjLounge lounge = createLounge(1L, 100L, LoungeStatus.LIVE);
+        QueueEntry e1 = createEntry(10L, 1L, 101L, 1, 0, 100L);
+        QueueEntry e2 = createEntry(20L, 1L, 102L, 2, 0, 100L);
+        QueueEntry e3 = createEntry(30L, 1L, 103L, 3, 0, 100L);
+
+        when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
+        when(queueEntryRepository.findByIdAndLoungeId(30L, 1L)).thenReturn(Mono.just(e3));
+        when(queueVoteRepository.existsByQueueEntryIdAndUserId(30L, 100L)).thenReturn(Mono.just(false));
+        when(queueVoteRepository.save(any(QueueVote.class))).thenAnswer(inv -> Mono.just(inv.getArgument(0)));
+        when(queueEntryRepository.findByLoungeIdOrderByPositionAsc(1L))
+                .thenReturn(Flux.just(e1, e2, e3))
+                .thenReturn(Flux.just(e3, e1, e2));
+        when(queueEntryRepository.saveAll(any(Iterable.class))).thenAnswer(inv -> Flux.fromIterable(inv.getArgument(0)));
+
+        // User votes for entry 30L (originally pos 3, 0 votes)
+        // With 1 vote, entry 30L bubbles up to position 1, e1 moves to 2, e2 moves to 3
+        StepVerifier.create(queueService.voteQueueEntry(1L, 30L, 100L))
+                .expectNextMatches(dto -> dto.getId().equals(30L)
+                        && dto.getVoteCount() == 1
+                        && dto.getPosition() == 1)
+                .verifyComplete();
+
+        // Verify that entries received normalized positions: e3=1, e1=2, e2=3
+        assertThat(e3.getPosition()).isEqualTo(1);
+        assertThat(e1.getPosition()).isEqualTo(2);
+        assertThat(e2.getPosition()).isEqualTo(3);
+    }
+
+    @Test
+    void voteQueueEntry_sortingRuleTieBreaker_preservesRelativeOrderWhenVotesAreEqual() {
+        DjLounge lounge = createLounge(1L, 100L, LoungeStatus.LIVE);
+        // e1 already has 1 vote at position 1
+        QueueEntry e1 = createEntry(10L, 1L, 101L, 1, 1, 100L);
+        // e2 has 0 votes at position 2
+        QueueEntry e2 = createEntry(20L, 1L, 102L, 2, 0, 100L);
+        // e3 has 0 votes at position 3
+        QueueEntry e3 = createEntry(30L, 1L, 103L, 3, 0, 100L);
+
+        when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
+        when(queueEntryRepository.findByIdAndLoungeId(20L, 1L)).thenReturn(Mono.just(e2));
+        when(queueVoteRepository.existsByQueueEntryIdAndUserId(20L, 100L)).thenReturn(Mono.just(false));
+        when(queueVoteRepository.save(any(QueueVote.class))).thenAnswer(inv -> Mono.just(inv.getArgument(0)));
+        when(queueEntryRepository.findByLoungeIdOrderByPositionAsc(1L))
+                .thenReturn(Flux.just(e1, e2, e3))
+                .thenReturn(Flux.just(e1, e2, e3));
+        when(queueEntryRepository.saveAll(any(Iterable.class))).thenAnswer(inv -> Flux.fromIterable(inv.getArgument(0)));
+
+        // User votes for entry 20L -> e2 now has 1 vote
+        // Both e1 and e2 have 1 vote.
+        // Tie-breaker: e1 was already position 1, so e1 stays at position 1, e2 takes position 2
+        StepVerifier.create(queueService.voteQueueEntry(1L, 20L, 100L))
+                .expectNextMatches(dto -> dto.getId().equals(20L)
+                        && dto.getVoteCount() == 1
+                        && dto.getPosition() == 2)
+                .verifyComplete();
+
+        assertThat(e1.getPosition()).isEqualTo(1);
+        assertThat(e2.getPosition()).isEqualTo(2);
+        assertThat(e3.getPosition()).isEqualTo(3);
     }
 }

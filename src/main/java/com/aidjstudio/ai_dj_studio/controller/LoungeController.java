@@ -164,6 +164,19 @@ public class LoungeController {
         );
     }
 
+    @PostMapping("/{loungeId}/queue/{queueEntryId}/vote")
+    public Mono<ResponseEntity<QueueEntryResponse>> voteQueueEntry(
+            @PathVariable Long loungeId,
+            @PathVariable Long queueEntryId,
+            @AuthenticationPrincipal Jwt jwt
+    ) {
+        Long authenticatedUserId = Long.valueOf(jwt.getSubject());
+
+        return queueService
+                .voteQueueEntry(loungeId, queueEntryId, authenticatedUserId)
+                .map(ResponseEntity::ok);
+    }
+
     @GetMapping("/{loungeId}/playback")
     public Mono<ResponseEntity<LoungePlaybackStateResponse>> getPlaybackState(
             @PathVariable Long loungeId

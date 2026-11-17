@@ -7,9 +7,11 @@ import com.aidjstudio.ai_dj_studio.dto.websocket.WsQueueUpdatePayload;
 import com.aidjstudio.ai_dj_studio.entity.DjLounge;
 import com.aidjstudio.ai_dj_studio.entity.LoungeStatus;
 import com.aidjstudio.ai_dj_studio.entity.QueueEntry;
+import com.aidjstudio.ai_dj_studio.entity.QueueVote;
 import com.aidjstudio.ai_dj_studio.repository.DjLoungeRepository;
 import com.aidjstudio.ai_dj_studio.repository.LoungeParticipantRepository;
 import com.aidjstudio.ai_dj_studio.repository.QueueEntryRepository;
+import com.aidjstudio.ai_dj_studio.repository.QueueVoteRepository;
 import com.aidjstudio.ai_dj_studio.repository.TrackRepository;
 import com.aidjstudio.ai_dj_studio.websocket.LoungeSessionManager;
 import lombok.RequiredArgsConstructor;
@@ -19,6 +21,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.Comparator;
 import java.util.List;
 
@@ -32,6 +35,7 @@ public class QueueService {
     private final LoungeParticipantRepository loungeParticipantRepository;
     private final LoungeSessionManager loungeSessionManager;
     private final LoungeQueueMutationSerializer mutationSerializer;
+    private final QueueVoteRepository queueVoteRepository;
 
     public Flux<QueueEntryResponse> getQueue(Long loungeId) {
         return findLounge(loungeId)
@@ -128,7 +132,8 @@ public class QueueService {
                                     ));
                                 }
 
-                                return queueEntryRepository.delete(entry);
+                                return queueVoteRepository.deleteByQueueEntryId(queueEntryId)
+                                        .then(queueEntryRepository.delete(entry));
                             });
                 });
     }
@@ -214,6 +219,109 @@ public class QueueService {
             Long authenticatedUserId
     ) {
         return reorderQueueEntry(loungeId, queueEntryId, 1, authenticatedUserId);
+    }
+
+    public Mono<QueueEntryResponse> voteQueueEntry(
+            Long loungeId,
+            Long queueEntryId,
+            Long authenticatedUserId
+    ) {
+        return mutationSerializer.executeSerialized(loungeId, () ->
+                doVoteQueueEntry(loungeId, queueEntryId, authenticatedUserId)
+                        .flatMap(votedEntry ->
+                                broadcastQueueUpdate(loungeId, "vote")
+                                        .thenReturn(toResponseDto(votedEntry))
+                        )
+        );
+    }
+
+    private Mono<QueueEntry> doVoteQueueEntry(
+            Long loungeId,
+            Long queueEntryId,
+            Long authenticatedUserId
+    ) {
+        if (loungeSessionManager.isQueueFrozen(loungeId)) {
+            return Mono.error(new IllegalStateException("Queue mutations are frozen while host is disconnected"));
+        }
+
+        return findLounge(loungeId)
+                .flatMap(lounge -> {
+                    if (lounge.getStatus() == LoungeStatus.ENDED) {
+                        return Mono.error(new IllegalStateException(
+                                "Cannot modify queue of an ended lounge"
+                        ));
+                    }
+
+                    return verifyParticipantPermission(lounge, authenticatedUserId)
+                            .then(Mono.defer(() -> queueEntryRepository.findByIdAndLoungeId(queueEntryId, loungeId)
+                                    .switchIfEmpty(Mono.error(new IllegalArgumentException(
+                                            "Queue entry not found with id: " + queueEntryId
+                                    )))
+                            ))
+                            .flatMap(entry ->
+                                    queueVoteRepository.existsByQueueEntryIdAndUserId(queueEntryId, authenticatedUserId)
+                                            .flatMap(alreadyVoted -> {
+                                                if (Boolean.TRUE.equals(alreadyVoted)) {
+                                                    return Mono.error(new IllegalStateException(
+                                                            "User has already voted for this track"
+                                                    ));
+                                                }
+
+                                                QueueVote vote = QueueVote.builder()
+                                                        .loungeId(loungeId)
+                                                        .queueEntryId(queueEntryId)
+                                                        .userId(authenticatedUserId)
+                                                        .createdAt(LocalDateTime.now())
+                                                        .build();
+
+                                                return queueVoteRepository.save(vote)
+                                                        .then(reorderQueueAfterVote(loungeId, queueEntryId));
+                                            })
+                            );
+                });
+    }
+
+    private Mono<QueueEntry> reorderQueueAfterVote(Long loungeId, Long votedEntryId) {
+        return queueEntryRepository.findByLoungeIdOrderByPositionAsc(loungeId)
+                .collectList()
+                .flatMap(entries -> {
+                    QueueEntry targetEntry = null;
+                    for (QueueEntry entry : entries) {
+                        if (entry.getId().equals(votedEntryId)) {
+                            entry.setVoteCount(entry.getVoteCount() + 1);
+                            targetEntry = entry;
+                            break;
+                        }
+                    }
+
+                    if (targetEntry == null) {
+                        return Mono.error(new IllegalArgumentException(
+                                "Queue entry not found with id: " + votedEntryId
+                        ));
+                    }
+
+                    // Sorting rule:
+                    // Primary: voteCount DESC (higher vote count moves to the top)
+                    // Secondary tie-breaker: position ASC (preserve relative order of previously ahead tracks)
+                    entries.sort(
+                            Comparator.comparing(QueueEntry::getVoteCount, Comparator.reverseOrder())
+                                    .thenComparing(QueueEntry::getPosition)
+                    );
+
+                    // Reassign contiguous 1-based positions
+                    for (int i = 0; i < entries.size(); i++) {
+                        entries.get(i).setPosition(i + 1);
+                    }
+
+                    final QueueEntry fallbackTarget = targetEntry;
+                    return queueEntryRepository.saveAll(entries)
+                            .collectList()
+                            .map(savedList -> savedList.stream()
+                                    .filter(e -> e.getId().equals(votedEntryId))
+                                    .findFirst()
+                                    .orElse(fallbackTarget)
+                            );
+                });
     }
 
     public Mono<List<QueueEntryResponse>> broadcastQueueUpdate(Long loungeId, String reason) {

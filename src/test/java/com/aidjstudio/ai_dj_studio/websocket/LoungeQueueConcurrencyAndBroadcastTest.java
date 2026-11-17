@@ -6,10 +6,12 @@ import com.aidjstudio.ai_dj_studio.dto.websocket.WsQueueUpdatePayload;
 import com.aidjstudio.ai_dj_studio.entity.DjLounge;
 import com.aidjstudio.ai_dj_studio.entity.LoungeStatus;
 import com.aidjstudio.ai_dj_studio.entity.QueueEntry;
+import com.aidjstudio.ai_dj_studio.entity.QueueVote;
 import com.aidjstudio.ai_dj_studio.entity.Track;
 import com.aidjstudio.ai_dj_studio.repository.DjLoungeRepository;
 import com.aidjstudio.ai_dj_studio.repository.LoungeParticipantRepository;
 import com.aidjstudio.ai_dj_studio.repository.QueueEntryRepository;
+import com.aidjstudio.ai_dj_studio.repository.QueueVoteRepository;
 import com.aidjstudio.ai_dj_studio.repository.TrackRepository;
 import com.aidjstudio.ai_dj_studio.service.LoungeQueueMutationSerializer;
 import com.aidjstudio.ai_dj_studio.service.QueueService;
@@ -27,7 +29,9 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.math.BigDecimal;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -51,6 +55,9 @@ class LoungeQueueConcurrencyAndBroadcastTest {
     @Mock
     private LoungeParticipantRepository loungeParticipantRepository;
 
+    @Mock
+    private QueueVoteRepository queueVoteRepository;
+
     private LoungeSessionManager loungeSessionManager;
     private LoungeQueueMutationSerializer mutationSerializer;
     private QueueService queueService;
@@ -67,7 +74,8 @@ class LoungeQueueConcurrencyAndBroadcastTest {
                 trackRepository,
                 loungeParticipantRepository,
                 loungeSessionManager,
-                mutationSerializer
+                mutationSerializer,
+                queueVoteRepository
         );
     }
 
@@ -224,6 +232,83 @@ class LoungeQueueConcurrencyAndBroadcastTest {
         assertThat(sub1Final).contains("\"reason\":\"manual\"");
         assertThat(sub1Final).contains("501");
         assertThat(sub1Final).contains("502");
+    }
+
+    @Test
+    void concurrentVotes_multipleSubscribers_serializedAndReceiveSameFinalQueue() throws InterruptedException {
+        Long loungeId = 1L;
+        DjLounge lounge = createLounge(loungeId, 100L);
+
+        // Setup 3 subscribers in the lounge
+        List<String> sub1Msgs = new CopyOnWriteArrayList<>();
+        List<String> sub2Msgs = new CopyOnWriteArrayList<>();
+        List<String> sub3Msgs = new CopyOnWriteArrayList<>();
+
+        registerSubscriber(loungeId, 201L, "sess-1").asFlux().subscribe(sub1Msgs::add);
+        registerSubscriber(loungeId, 202L, "sess-2").asFlux().subscribe(sub2Msgs::add);
+        registerSubscriber(loungeId, 203L, "sess-3").asFlux().subscribe(sub3Msgs::add);
+
+        // Two existing entries: Track A (pos 1, 0 votes) and Track B (pos 2, 0 votes)
+        QueueEntry entryA = createEntry(10L, loungeId, 101L, 1);
+        QueueEntry entryB = createEntry(20L, loungeId, 102L, 2);
+
+        List<QueueEntry> state = new CopyOnWriteArrayList<>();
+        state.add(entryA);
+        state.add(entryB);
+
+        when(djLoungeRepository.findById(loungeId)).thenReturn(Mono.just(lounge));
+        when(queueEntryRepository.findByIdAndLoungeId(eq(10L), eq(loungeId))).thenReturn(Mono.just(entryA));
+        when(queueEntryRepository.findByIdAndLoungeId(eq(20L), eq(loungeId))).thenReturn(Mono.just(entryB));
+        when(queueVoteRepository.existsByQueueEntryIdAndUserId(anyLong(), anyLong())).thenReturn(Mono.just(false));
+        when(queueVoteRepository.save(any(QueueVote.class))).thenAnswer(inv -> Mono.just(inv.getArgument(0)));
+
+        when(queueEntryRepository.findByLoungeIdOrderByPositionAsc(loungeId)).thenAnswer(inv ->
+                Mono.delay(Duration.ofMillis(10))
+                        .flatMapMany(tick -> {
+                            List<QueueEntry> copy = new ArrayList<>(state);
+                            copy.sort(Comparator.comparing(QueueEntry::getPosition));
+                            return Flux.fromIterable(copy);
+                        })
+        );
+
+        when(queueEntryRepository.saveAll(any(Iterable.class))).thenAnswer(inv -> {
+            Iterable<QueueEntry> iterable = inv.getArgument(0);
+            return Mono.delay(Duration.ofMillis(10)).flatMapMany(tick -> {
+                for (QueueEntry e : iterable) {
+                    for (int i = 0; i < state.size(); i++) {
+                        if (state.get(i).getId().equals(e.getId())) {
+                            state.set(i, e);
+                        }
+                    }
+                }
+                return Flux.fromIterable(new ArrayList<>(state));
+            });
+        });
+
+        // User 100L votes for entry B (102L), which had pos 2
+        // Simultaneously, User 100L (host) votes for entry A (101L)
+        // With serialization, both votes apply cleanly and reorder atomically
+        Mono<Void> vote1 = queueService.voteQueueEntry(loungeId, 20L, 100L).then();
+        Mono<Void> vote2 = queueService.voteQueueEntry(loungeId, 10L, 100L).then();
+
+        StepVerifier.create(Flux.merge(vote1, vote2))
+                .verifyComplete();
+
+        Thread.sleep(100);
+
+        // Both subscribers received both broadcasts (2 events) with reason "vote"
+        assertThat(sub1Msgs).hasSize(2);
+        assertThat(sub2Msgs).hasSize(2);
+        assertThat(sub3Msgs).hasSize(2);
+
+        String sub1Final = sub1Msgs.get(sub1Msgs.size() - 1);
+        String sub2Final = sub2Msgs.get(sub2Msgs.size() - 1);
+        String sub3Final = sub3Msgs.get(sub3Msgs.size() - 1);
+
+        assertThat(sub1Final).isEqualTo(sub2Final);
+        assertThat(sub2Final).isEqualTo(sub3Final);
+        assertThat(sub1Final).contains("lounge.queue.update");
+        assertThat(sub1Final).contains("\"reason\":\"vote\"");
     }
 
     @Test
