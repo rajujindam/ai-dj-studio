@@ -188,6 +188,10 @@ public class AcousticMatcherService {
     }
 
     public AcousticMatchResult evaluateMatch(Track currentTrack, Track candidateTrack) {
+        return evaluateMatch(currentTrack, candidateTrack, DEFAULT_BPM_TOLERANCE_PCT);
+    }
+
+    public AcousticMatchResult evaluateMatch(Track currentTrack, Track candidateTrack, double tolerancePct) {
         if (currentTrack == null || candidateTrack == null) {
             throw new IllegalArgumentException("Tracks cannot be null");
         }
@@ -195,7 +199,8 @@ public class AcousticMatcherService {
                 currentTrack.getBpm(),
                 currentTrack.getCamelotKey(),
                 candidateTrack.getBpm(),
-                candidateTrack.getCamelotKey()
+                candidateTrack.getCamelotKey(),
+                tolerancePct
         );
     }
 
