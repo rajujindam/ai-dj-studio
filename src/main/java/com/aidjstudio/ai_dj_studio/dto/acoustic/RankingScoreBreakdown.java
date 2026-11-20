@@ -26,6 +26,9 @@ public class RankingScoreBreakdown {
     private double energyWeightedScore;
     private BigDecimal candidateEnergy;
     private BigDecimal targetEnergy;
+    private BigDecimal baseEnergy;
+    private Double sentimentScore;
+    private BigDecimal sentimentEnergyShift;
 
     // Recency (20% weight)
     private double recencyScore;

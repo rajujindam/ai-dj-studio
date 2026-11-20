@@ -5,6 +5,7 @@ import com.aidjstudio.ai_dj_studio.dto.acoustic.CandidateRankingContext;
 import com.aidjstudio.ai_dj_studio.dto.acoustic.HarmonicRelation;
 import com.aidjstudio.ai_dj_studio.dto.acoustic.RankedCandidate;
 import com.aidjstudio.ai_dj_studio.dto.acoustic.RankingScoreBreakdown;
+import com.aidjstudio.ai_dj_studio.dto.sentiment.RoomSentimentSnapshot;
 import com.aidjstudio.ai_dj_studio.entity.Track;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -30,9 +31,22 @@ public class CandidateRankingService {
     public static final double HARMONIC_ADJACENT_KEY_SCORE = 0.8;
     public static final double HARMONIC_RELATIVE_KEY_SCORE = 0.7;
 
+    /**
+     * Maximum energy shift caused by crowd sentiment.
+     * Range: -0.30 (full negative / fatigued) to +0.30 (full positive / energetic).
+     */
+    public static final double MAX_SENTIMENT_ENERGY_SHIFT = 0.30;
+
     private static final double SCORE_EPSILON = 1e-6;
 
     private final AcousticMatcherService acousticMatcherService;
+
+    private record TargetEnergyPlan(
+            BigDecimal effectiveTargetEnergy,
+            BigDecimal baseEnergy,
+            Double effectiveSentimentScore,
+            BigDecimal sentimentEnergyShift
+    ) {}
 
     /**
      * Ranks compatible candidates based on:
@@ -47,7 +61,9 @@ public class CandidateRankingService {
             List<Track> candidates,
             List<Long> recentTrackIds,
             BigDecimal targetEnergy,
-            Double bpmTolerancePct
+            Double bpmTolerancePct,
+            RoomSentimentSnapshot roomSentiment,
+            Double sentimentScore
     ) {
         if (currentTrack == null) {
             throw new IllegalArgumentException("Current track cannot be null");
@@ -57,7 +73,7 @@ public class CandidateRankingService {
         }
 
         double tolerance = bpmTolerancePct != null ? bpmTolerancePct : AcousticMatcherService.DEFAULT_BPM_TOLERANCE_PCT;
-        BigDecimal effectiveTargetEnergy = resolveTargetEnergy(currentTrack, targetEnergy);
+        TargetEnergyPlan energyPlan = resolveTargetEnergy(currentTrack, targetEnergy, roomSentiment, sentimentScore);
 
         List<RankedCandidate> scoredList = new ArrayList<>();
 
@@ -67,6 +83,7 @@ public class CandidateRankingService {
             }
 
             // F10 Hard Constraint Check: Segue Gatekeeper
+            // Acoustic compatibility must NEVER be overridden by sentiment or preference
             AcousticMatchResult matchResult = acousticMatcherService.evaluateMatch(currentTrack, candidate, tolerance);
             if (!matchResult.isCompatible()) {
                 // Incompatible candidate never enters ranking
@@ -76,7 +93,7 @@ public class CandidateRankingService {
             RankingScoreBreakdown breakdown = computeScoreBreakdown(
                     candidate,
                     matchResult,
-                    effectiveTargetEnergy,
+                    energyPlan,
                     recentTrackIds
             );
 
@@ -102,6 +119,24 @@ public class CandidateRankingService {
             Track currentTrack,
             List<Track> candidates,
             List<Long> recentTrackIds,
+            BigDecimal targetEnergy,
+            Double bpmTolerancePct
+    ) {
+        return rankCandidates(
+                currentTrack,
+                candidates,
+                recentTrackIds,
+                targetEnergy,
+                bpmTolerancePct,
+                null,
+                null
+        );
+    }
+
+    public List<RankedCandidate> rankCandidates(
+            Track currentTrack,
+            List<Track> candidates,
+            List<Long> recentTrackIds,
             BigDecimal targetEnergy
     ) {
         return rankCandidates(
@@ -109,12 +144,55 @@ public class CandidateRankingService {
                 candidates,
                 recentTrackIds,
                 targetEnergy,
-                AcousticMatcherService.DEFAULT_BPM_TOLERANCE_PCT
+                AcousticMatcherService.DEFAULT_BPM_TOLERANCE_PCT,
+                null,
+                null
+        );
+    }
+
+    public List<RankedCandidate> rankCandidates(
+            Track currentTrack,
+            List<Track> candidates,
+            List<Long> recentTrackIds,
+            RoomSentimentSnapshot roomSentiment
+    ) {
+        return rankCandidates(
+                currentTrack,
+                candidates,
+                recentTrackIds,
+                (BigDecimal) null,
+                AcousticMatcherService.DEFAULT_BPM_TOLERANCE_PCT,
+                roomSentiment,
+                null
+        );
+    }
+
+    public List<RankedCandidate> rankCandidates(
+            Track currentTrack,
+            List<Track> candidates,
+            RoomSentimentSnapshot roomSentiment
+    ) {
+        return rankCandidates(
+                currentTrack,
+                candidates,
+                Collections.emptyList(),
+                (BigDecimal) null,
+                AcousticMatcherService.DEFAULT_BPM_TOLERANCE_PCT,
+                roomSentiment,
+                null
         );
     }
 
     public List<RankedCandidate> rankCandidates(Track currentTrack, List<Track> candidates) {
-        return rankCandidates(currentTrack, candidates, Collections.emptyList(), null);
+        return rankCandidates(
+                currentTrack,
+                candidates,
+                Collections.emptyList(),
+                (BigDecimal) null,
+                AcousticMatcherService.DEFAULT_BPM_TOLERANCE_PCT,
+                null,
+                null
+        );
     }
 
     public List<RankedCandidate> rankCandidates(CandidateRankingContext context) {
@@ -126,7 +204,9 @@ public class CandidateRankingService {
                 context.getCandidates(),
                 context.getRecentTrackIds(),
                 context.getTargetEnergy(),
-                context.getBpmTolerancePct()
+                context.getBpmTolerancePct(),
+                context.getRoomSentiment(),
+                context.getSentimentScore()
         );
     }
 
@@ -142,18 +222,18 @@ public class CandidateRankingService {
     private RankingScoreBreakdown computeScoreBreakdown(
             Track candidate,
             AcousticMatchResult matchResult,
-            BigDecimal targetEnergy,
+            TargetEnergyPlan energyPlan,
             List<Long> recentTrackIds
     ) {
         // 1. Harmonic Closeness (50%)
         double harmonicScore = computeHarmonicScore(matchResult.getHarmonicRelation());
         double harmonicWeighted = harmonicScore * HARMONIC_WEIGHT;
 
-        // 2. Energy Fit (30%)
+        // 2. Energy Fit (30%) - Influenced by Rolling Sentiment in F13
         BigDecimal candidateEnergy = candidate.getEnergy() != null
                 ? clampEnergy(candidate.getEnergy())
                 : BigDecimal.valueOf(0.5);
-        double energyDistance = Math.abs(candidateEnergy.doubleValue() - targetEnergy.doubleValue());
+        double energyDistance = Math.abs(candidateEnergy.doubleValue() - energyPlan.effectiveTargetEnergy().doubleValue());
         double energyScore = Math.max(0.0, Math.min(1.0, 1.0 - energyDistance));
         double energyWeighted = energyScore * ENERGY_WEIGHT;
 
@@ -176,7 +256,7 @@ public class CandidateRankingService {
                 energyScore,
                 energyWeighted,
                 candidateEnergy,
-                targetEnergy,
+                energyPlan,
                 recencyScore,
                 recencyWeighted,
                 recentIndex,
@@ -192,7 +272,10 @@ public class CandidateRankingService {
                 .energyWeight(ENERGY_WEIGHT)
                 .energyWeightedScore(roundTo4(energyWeighted))
                 .candidateEnergy(candidateEnergy)
-                .targetEnergy(targetEnergy)
+                .targetEnergy(energyPlan.effectiveTargetEnergy())
+                .baseEnergy(energyPlan.baseEnergy())
+                .sentimentScore(energyPlan.effectiveSentimentScore())
+                .sentimentEnergyShift(energyPlan.sentimentEnergyShift())
                 .recencyScore(roundTo4(recencyScore))
                 .recencyWeight(RECENCY_WEIGHT)
                 .recencyWeightedScore(roundTo4(recencyWeighted))
@@ -270,14 +353,36 @@ public class CandidateRankingService {
         };
     }
 
-    private BigDecimal resolveTargetEnergy(Track currentTrack, BigDecimal targetEnergy) {
-        if (targetEnergy != null) {
-            return clampEnergy(targetEnergy);
+    /**
+     * Resolves target energy incorporating crowd rolling sentiment (F13):
+     * Target Energy = clamp(baseEnergy + (sentimentScore * 0.30), 0.0, 1.0)
+     */
+    private TargetEnergyPlan resolveTargetEnergy(
+            Track currentTrack,
+            BigDecimal explicitTargetEnergy,
+            RoomSentimentSnapshot roomSentiment,
+            Double explicitSentimentScore
+    ) {
+        BigDecimal base = explicitTargetEnergy != null
+                ? clampEnergy(explicitTargetEnergy)
+                : (currentTrack.getEnergy() != null ? clampEnergy(currentTrack.getEnergy()) : BigDecimal.valueOf(0.5));
+
+        Double score = explicitSentimentScore;
+        if (score == null && roomSentiment != null) {
+            score = roomSentiment.getRoomScore();
         }
-        if (currentTrack.getEnergy() != null) {
-            return clampEnergy(currentTrack.getEnergy());
+
+        if (score != null) {
+            // Clamp sentiment score to [-1.0, +1.0]
+            double clampedScore = Math.max(-1.0, Math.min(1.0, score));
+            double shiftValue = clampedScore * MAX_SENTIMENT_ENERGY_SHIFT;
+            BigDecimal shift = BigDecimal.valueOf(shiftValue).setScale(2, RoundingMode.HALF_UP);
+            BigDecimal target = clampEnergy(base.add(shift));
+
+            return new TargetEnergyPlan(target, base, clampedScore, shift);
         }
-        return BigDecimal.valueOf(0.5);
+
+        return new TargetEnergyPlan(base, base, null, BigDecimal.ZERO);
     }
 
     private BigDecimal clampEnergy(BigDecimal energy) {
@@ -302,7 +407,7 @@ public class CandidateRankingService {
             double energyScore,
             double energyWeighted,
             BigDecimal candidateEnergy,
-            BigDecimal targetEnergy,
+            TargetEnergyPlan energyPlan,
             double recencyScore,
             double recencyWeighted,
             Integer recentIndex,
@@ -312,16 +417,29 @@ public class CandidateRankingService {
                 ? "not in recent window"
                 : String.format("played %d tracks ago (index %d/%d)", recentIndex + 1, recentIndex, recentTrackIds.size());
 
+        String energyDetail;
+        if (energyPlan.effectiveSentimentScore() != null) {
+            energyDetail = String.format(
+                    "cand=%.2f, target=%.2f [base=%.2f, shift=%+.2f from sentiment %.2f]",
+                    candidateEnergy,
+                    energyPlan.effectiveTargetEnergy(),
+                    energyPlan.baseEnergy(),
+                    energyPlan.sentimentEnergyShift(),
+                    energyPlan.effectiveSentimentScore()
+            );
+        } else {
+            energyDetail = String.format("cand=%.2f, target=%.2f", candidateEnergy, energyPlan.effectiveTargetEnergy());
+        }
+
         return String.format(
-                "Rank Score: %.4f [Harmonic(50%%): %.2f * 0.50 = %.4f (%s) | Energy(30%%): %.2f * 0.30 = %.4f (cand=%.2f, target=%.2f) | Recency(20%%): %.2f * 0.20 = %.4f (%s)]",
+                "Rank Score: %.4f [Harmonic(50%%): %.2f * 0.50 = %.4f (%s) | Energy(30%%): %.2f * 0.30 = %.4f (%s) | Recency(20%%): %.2f * 0.20 = %.4f (%s)]",
                 totalScore,
                 harmonicScore,
                 harmonicWeighted,
                 relation,
                 energyScore,
                 energyWeighted,
-                candidateEnergy,
-                targetEnergy,
+                energyDetail,
                 recencyScore,
                 recencyWeighted,
                 recencyDetail

@@ -4,7 +4,11 @@ import com.aidjstudio.ai_dj_studio.dto.acoustic.CandidateRankingContext;
 import com.aidjstudio.ai_dj_studio.dto.acoustic.HarmonicRelation;
 import com.aidjstudio.ai_dj_studio.dto.acoustic.RankedCandidate;
 import com.aidjstudio.ai_dj_studio.dto.acoustic.RankingScoreBreakdown;
+import com.aidjstudio.ai_dj_studio.dto.sentiment.RoomSentimentSnapshot;
+import com.aidjstudio.ai_dj_studio.dto.sentiment.SentimentBucket;
 import com.aidjstudio.ai_dj_studio.entity.Track;
+import com.aidjstudio.ai_dj_studio.service.sentiment.LexiconSentimentScorer;
+import com.aidjstudio.ai_dj_studio.service.sentiment.RollingWindowSentimentService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -12,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import reactor.test.StepVerifier;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -114,7 +119,6 @@ class CandidateRankingServiceTest {
         @Test
         @DisplayName("Harmonic Closeness 50% contribution: Same (1.0) vs Adjacent (0.8) vs Relative (0.7)")
         void harmonicWeights_contribution() {
-            // All candidates have identical BPM, identical energy (1.0 - 0 = 1.0 fit), and none are recent (recency = 1.0)
             Track current = createTrack(1L, "Current", "Artist", "120.00", "8A", "0.80");
 
             Track sameKey = createTrack(10L, "SameKey", "Artist", "120.00", "8A", "0.80");
@@ -166,14 +170,10 @@ class CandidateRankingServiceTest {
         @Test
         @DisplayName("Energy curve fit 30% contribution: closer energy to target ranks higher")
         void energyCurveFit_contribution() {
-            // Current track 8A, 120 BPM, target energy = 0.90
             Track current = createTrack(1L, "Current", "Artist", "120.00", "8A", "0.50");
 
-            // Candidate A: 8A, energy 0.90 (diff = 0.0 -> score 1.0, weighted = 0.30)
             Track candA = createTrack(20L, "PerfectEnergy", "Artist", "120.00", "8A", "0.90");
-            // Candidate B: 8A, energy 0.70 (diff = 0.2 -> score 0.8, weighted = 0.24)
             Track candB = createTrack(21L, "MediumEnergy", "Artist", "120.00", "8A", "0.70");
-            // Candidate C: 8A, energy 0.20 (diff = 0.7 -> score 0.3, weighted = 0.09)
             Track candC = createTrack(22L, "LowEnergy", "Artist", "120.00", "8A", "0.20");
 
             BigDecimal targetEnergy = new BigDecimal("0.90");
@@ -191,11 +191,11 @@ class CandidateRankingServiceTest {
 
             assertThat(ranked.get(1).getTrack().getId()).isEqualTo(21L); // Medium energy
             assertThat(ranked.get(1).getScoreBreakdown().getEnergyScore()).isEqualTo(0.8);
-            assertThat(ranked.get(1).getScoreBreakdown().getTotalScore()).isEqualTo(0.9400); // 0.50 + 0.24 + 0.20
+            assertThat(ranked.get(1).getScoreBreakdown().getTotalScore()).isEqualTo(0.9400);
 
             assertThat(ranked.get(2).getTrack().getId()).isEqualTo(22L); // Low energy
             assertThat(ranked.get(2).getScoreBreakdown().getEnergyScore()).isEqualTo(0.3);
-            assertThat(ranked.get(2).getScoreBreakdown().getTotalScore()).isEqualTo(0.7900); // 0.50 + 0.09 + 0.20
+            assertThat(ranked.get(2).getScoreBreakdown().getTotalScore()).isEqualTo(0.7900);
         }
     }
 
@@ -212,13 +212,11 @@ class CandidateRankingServiceTest {
         void recencyPenalty_linearDecay() {
             Track current = createTrack(1L, "Current", "Artist", "120.00", "8A", "0.80");
 
-            // 4 tracks with identical harmonic and energy profiles
             Track trackJustPlayed = createTrack(100L, "JustPlayed", "Artist", "120.00", "8A", "0.80");
             Track trackPlayedMiddle = createTrack(101L, "PlayedMiddle", "Artist", "120.00", "8A", "0.80");
             Track trackPlayedOld = createTrack(102L, "PlayedOld", "Artist", "120.00", "8A", "0.80");
             Track trackNotRecent = createTrack(103L, "NotRecent", "Artist", "120.00", "8A", "0.80");
 
-            // Recent window of size 5: [100 (most recent, idx 0), 200, 101 (idx 2), 300, 102 (idx 4)]
             List<Long> recentTrackIds = Arrays.asList(100L, 200L, 101L, 300L, 102L);
 
             List<RankedCandidate> ranked = rankingService.rankCandidates(
@@ -230,25 +228,25 @@ class CandidateRankingServiceTest {
 
             assertThat(ranked).hasSize(4);
 
-            // 1st: NotRecent (not in recent window -> recencyScore = 1.0, weighted = 0.20)
+            // 1st: NotRecent (recencyScore = 1.0, weighted = 0.20)
             assertThat(ranked.get(0).getTrack().getId()).isEqualTo(103L);
             assertThat(ranked.get(0).getScoreBreakdown().getRecencyScore()).isEqualTo(1.0);
             assertThat(ranked.get(0).getScoreBreakdown().getTotalScore()).isEqualTo(1.0000);
 
-            // 2nd: PlayedOld (index 4 in window of 5 -> 4/5 = 0.8, weighted = 0.16)
+            // 2nd: PlayedOld (4/5 = 0.8, weighted = 0.16)
             assertThat(ranked.get(1).getTrack().getId()).isEqualTo(102L);
             assertThat(ranked.get(1).getScoreBreakdown().getRecencyScore()).isEqualTo(0.8);
-            assertThat(ranked.get(1).getScoreBreakdown().getTotalScore()).isEqualTo(0.9600); // 0.50 + 0.30 + 0.16
+            assertThat(ranked.get(1).getScoreBreakdown().getTotalScore()).isEqualTo(0.9600);
 
-            // 3rd: PlayedMiddle (index 2 in window of 5 -> 2/5 = 0.4, weighted = 0.08)
+            // 3rd: PlayedMiddle (2/5 = 0.4, weighted = 0.08)
             assertThat(ranked.get(2).getTrack().getId()).isEqualTo(101L);
             assertThat(ranked.get(2).getScoreBreakdown().getRecencyScore()).isEqualTo(0.4);
-            assertThat(ranked.get(2).getScoreBreakdown().getTotalScore()).isEqualTo(0.8800); // 0.50 + 0.30 + 0.08
+            assertThat(ranked.get(2).getScoreBreakdown().getTotalScore()).isEqualTo(0.8800);
 
-            // 4th: JustPlayed (index 0 in window of 5 -> 0/5 = 0.0, weighted = 0.00)
+            // 4th: JustPlayed (0/5 = 0.0, weighted = 0.00)
             assertThat(ranked.get(3).getTrack().getId()).isEqualTo(100L);
             assertThat(ranked.get(3).getScoreBreakdown().getRecencyScore()).isEqualTo(0.0);
-            assertThat(ranked.get(3).getScoreBreakdown().getTotalScore()).isEqualTo(0.8000); // 0.50 + 0.30 + 0.00
+            assertThat(ranked.get(3).getScoreBreakdown().getTotalScore()).isEqualTo(0.8000);
         }
 
         @Test
@@ -281,22 +279,17 @@ class CandidateRankingServiceTest {
         @Test
         @DisplayName("Tie in total score is broken by lower BPM delta percentage")
         void tie_brokenByBpmDeltaPercent() {
-            // Current is 120 BPM, 8A, energy 0.80
             Track current = createTrack(1L, "Current", "Artist", "120.00", "8A", "0.80");
 
-            // Candidate A: 122 BPM (delta % = +1.67%)
             Track candA = createTrack(200L, "CandA_CloseBpm", "Artist", "122.00", "8A", "0.80");
-            // Candidate B: 126 BPM (delta % = +5.00%)
             Track candB = createTrack(100L, "CandB_FarBpm", "Artist", "126.00", "8A", "0.80");
 
-            // Both have SameKey (0.50), same energy (0.30), neither is recent (0.20) -> total score 1.0000
             List<RankedCandidate> ranked = rankingService.rankCandidates(
                     current,
-                    Arrays.asList(candB, candA) // Pass B first
+                    Arrays.asList(candB, candA)
             );
 
             assertThat(ranked).hasSize(2);
-            // candA wins because |1.67%| < |5.00%|, even though candB has a lower track ID (100 vs 200)
             assertThat(ranked.get(0).getTrack().getId()).isEqualTo(200L);
             assertThat(ranked.get(0).getRank()).isEqualTo(1);
             assertThat(ranked.get(1).getTrack().getId()).isEqualTo(100L);
@@ -308,19 +301,15 @@ class CandidateRankingServiceTest {
         void tie_brokenByTrackId() {
             Track current = createTrack(1L, "Current", "Artist", "120.00", "8A", "0.80");
 
-            // Candidate A: ID 50, 120.00 BPM
             Track candA = createTrack(50L, "CandA", "Artist", "120.00", "8A", "0.80");
-            // Candidate B: ID 15, 120.00 BPM
             Track candB = createTrack(15L, "CandB", "Artist", "120.00", "8A", "0.80");
 
-            // Both have exact same score (1.0000) and BPM delta (0.00%)
             List<RankedCandidate> ranked = rankingService.rankCandidates(
                     current,
                     Arrays.asList(candA, candB)
             );
 
             assertThat(ranked).hasSize(2);
-            // Lower track ID wins deterministically: 15L < 50L
             assertThat(ranked.get(0).getTrack().getId()).isEqualTo(15L);
             assertThat(ranked.get(0).getRank()).isEqualTo(1);
             assertThat(ranked.get(1).getTrack().getId()).isEqualTo(50L);
@@ -329,7 +318,196 @@ class CandidateRankingServiceTest {
     }
 
     // ==========================================
-    // 5. CONTEXT & REACTIVE EXECUTION TESTS
+    // 5. F13 SENTIMENT CURATION TESTS
+    // ==========================================
+
+    @Nested
+    @DisplayName("F13 Sentiment Curation Tests")
+    class SentimentCurationTests {
+
+        @Test
+        @DisplayName("Positive/energetic sentiment shifts target energy up (+0.30) and favors high-energy tracks")
+        void positiveSentiment_shiftsEnergyUp_favorsHighEnergy() {
+            // Base current track energy = 0.60
+            Track current = createTrack(1L, "Current", "Artist", "120.00", "8A", "0.60");
+
+            // Candidate High: energy 0.90
+            Track candHigh = createTrack(10L, "HighEnergy", "Artist", "120.00", "8A", "0.90");
+            // Candidate Low: energy 0.60
+            Track candLow = createTrack(11L, "LowEnergy", "Artist", "120.00", "8A", "0.60");
+
+            // Case A: Without sentiment, candLow (diff = 0) outranks candHigh (diff = 0.30)
+            List<RankedCandidate> baseRanked = rankingService.rankCandidates(current, Arrays.asList(candHigh, candLow));
+            assertThat(baseRanked.get(0).getTrack().getId()).isEqualTo(11L); // Low energy wins at base 0.60
+
+            // Case B: With positive/energetic sentiment (+1.00), target energy shifts to 0.60 + 0.30 = 0.90!
+            RoomSentimentSnapshot positiveSentiment = RoomSentimentSnapshot.builder()
+                    .roomScore(1.000)
+                    .normalizedVibe(1.000)
+                    .dominantBucket(SentimentBucket.POSITIVE)
+                    .totalSamples(5)
+                    .build();
+
+            CandidateRankingContext context = CandidateRankingContext.builder()
+                    .currentTrack(current)
+                    .candidates(Arrays.asList(candLow, candHigh))
+                    .roomSentiment(positiveSentiment)
+                    .build();
+
+            List<RankedCandidate> sentimentRanked = rankingService.rankCandidates(context);
+
+            assertThat(sentimentRanked).hasSize(2);
+            // High energy candidate now wins because its 0.90 energy perfectly matches the +0.30 shifted target (0.90)
+            assertThat(sentimentRanked.get(0).getTrack().getId()).isEqualTo(10L);
+            assertThat(sentimentRanked.get(0).getRank()).isEqualTo(1);
+            assertThat(sentimentRanked.get(0).getScoreBreakdown().getEnergyScore()).isEqualTo(1.0);
+            assertThat(sentimentRanked.get(0).getScoreBreakdown().getTargetEnergy()).isEqualByComparingTo("0.90");
+            assertThat(sentimentRanked.get(0).getScoreBreakdown().getBaseEnergy()).isEqualByComparingTo("0.60");
+            assertThat(sentimentRanked.get(0).getScoreBreakdown().getSentimentScore()).isEqualTo(1.000);
+            assertThat(sentimentRanked.get(0).getScoreBreakdown().getSentimentEnergyShift()).isEqualByComparingTo("0.30");
+
+            // Low energy candidate (0.60) now has diff = |0.60 - 0.90| = 0.30, energy score = 0.70
+            assertThat(sentimentRanked.get(1).getTrack().getId()).isEqualTo(11L);
+            assertThat(sentimentRanked.get(1).getRank()).isEqualTo(2);
+            assertThat(sentimentRanked.get(1).getScoreBreakdown().getEnergyScore()).isEqualTo(0.7);
+        }
+
+        @Test
+        @DisplayName("Negative/fatigued sentiment shifts target energy down (-0.30) and favors chill/low-energy tracks")
+        void negativeSentiment_shiftsEnergyDown_favorsChillLowEnergy() {
+            // Base current track energy = 0.60
+            Track current = createTrack(1L, "Current", "Artist", "120.00", "8A", "0.60");
+
+            // Candidate High: energy 0.60
+            Track candHigh = createTrack(20L, "HighEnergy", "Artist", "120.00", "8A", "0.60");
+            // Candidate Chill: energy 0.30
+            Track candChill = createTrack(21L, "ChillEnergy", "Artist", "120.00", "8A", "0.30");
+
+            // Room sentiment is negative / crowd is fatigued (-1.00): target energy becomes 0.60 - 0.30 = 0.30!
+            RoomSentimentSnapshot negativeSentiment = RoomSentimentSnapshot.builder()
+                    .roomScore(-1.000)
+                    .normalizedVibe(0.000)
+                    .dominantBucket(SentimentBucket.NEGATIVE)
+                    .totalSamples(4)
+                    .build();
+
+            CandidateRankingContext context = CandidateRankingContext.builder()
+                    .currentTrack(current)
+                    .candidates(Arrays.asList(candHigh, candChill))
+                    .roomSentiment(negativeSentiment)
+                    .build();
+
+            List<RankedCandidate> ranked = rankingService.rankCandidates(context);
+
+            assertThat(ranked).hasSize(2);
+            // Chill energy candidate (0.30) wins because it matches the cooldown target (0.30)
+            assertThat(ranked.get(0).getTrack().getId()).isEqualTo(21L);
+            assertThat(ranked.get(0).getRank()).isEqualTo(1);
+            assertThat(ranked.get(0).getScoreBreakdown().getEnergyScore()).isEqualTo(1.0);
+            assertThat(ranked.get(0).getScoreBreakdown().getTargetEnergy()).isEqualByComparingTo("0.30");
+            assertThat(ranked.get(0).getScoreBreakdown().getSentimentEnergyShift()).isEqualByComparingTo("-0.30");
+
+            // High energy candidate has diff = |0.60 - 0.30| = 0.30, energy score = 0.70
+            assertThat(ranked.get(1).getTrack().getId()).isEqualTo(20L);
+            assertThat(ranked.get(1).getRank()).isEqualTo(2);
+        }
+
+        @Test
+        @DisplayName("Neutral sentiment preserves current track's base energy with 0 shift")
+        void neutralSentiment_preservesBaseEnergy() {
+            Track current = createTrack(1L, "Current", "Artist", "120.00", "8A", "0.75");
+            Track cand = createTrack(30L, "Cand", "Artist", "120.00", "8A", "0.75");
+
+            RoomSentimentSnapshot neutralSentiment = RoomSentimentSnapshot.builder()
+                    .roomScore(0.000)
+                    .normalizedVibe(0.500)
+                    .dominantBucket(SentimentBucket.NEUTRAL)
+                    .totalSamples(2)
+                    .build();
+
+            CandidateRankingContext context = CandidateRankingContext.builder()
+                    .currentTrack(current)
+                    .candidates(List.of(cand))
+                    .roomSentiment(neutralSentiment)
+                    .build();
+
+            List<RankedCandidate> ranked = rankingService.rankCandidates(context);
+
+            assertThat(ranked).hasSize(1);
+            assertThat(ranked.get(0).getScoreBreakdown().getTargetEnergy()).isEqualByComparingTo("0.75");
+            assertThat(ranked.get(0).getScoreBreakdown().getSentimentEnergyShift()).isEqualByComparingTo("0.00");
+        }
+
+        @Test
+        @DisplayName("HARD RULE GUARANTEE: Incompatible candidate is NEVER ranked even with 100% sentiment match")
+        void hardConstraintGuarantee_incompatibleTrackNeverRanked() {
+            // Current is 120 BPM, 8A, energy 0.60
+            Track current = createTrack(1L, "Current", "Artist", "120.00", "8A", "0.60");
+
+            // Extreme hype sentiment (+1.00) -> Target energy = 0.90
+            RoomSentimentSnapshot hypeSentiment = RoomSentimentSnapshot.builder()
+                    .roomScore(1.000)
+                    .dominantBucket(SentimentBucket.POSITIVE)
+                    .build();
+
+            // Candidate 1: Incompatible BPM (160 BPM) but PERFECT energy 0.90
+            Track bpmClash = createTrack(100L, "BpmClash", "Artist", "160.00", "8A", "0.90");
+
+            // Candidate 2: Incompatible Camelot key (11B vs 8A) but PERFECT energy 0.90
+            Track keyClash = createTrack(101L, "KeyClash", "Artist", "120.00", "11B", "0.90");
+
+            // Candidate 3: Compatible (120 BPM, 8A), but moderate energy (0.60 -> energy score 0.70)
+            Track compatible = createTrack(102L, "Compatible", "Artist", "120.00", "8A", "0.60");
+
+            CandidateRankingContext context = CandidateRankingContext.builder()
+                    .currentTrack(current)
+                    .candidates(Arrays.asList(bpmClash, keyClash, compatible))
+                    .roomSentiment(hypeSentiment)
+                    .build();
+
+            List<RankedCandidate> ranked = rankingService.rankCandidates(context);
+
+            // Both clash candidates are completely rejected by F10 gatekeeper
+            assertThat(ranked).hasSize(1);
+            assertThat(ranked.get(0).getTrack().getId()).isEqualTo(102L);
+            assertThat(ranked.get(0).getMatchResult().isCompatible()).isTrue();
+        }
+
+        @Test
+        @DisplayName("Full End-to-End Pipeline: RollingWindowSentimentService feeds CandidateRankingService")
+        void endToEnd_sentimentServiceFeedsRanking() {
+            RollingWindowSentimentService sentimentService = new RollingWindowSentimentService(new LexiconSentimentScorer());
+            Long loungeId = 999L;
+            Instant now = Instant.now();
+
+            // Simulate crowd chatting enthusiastically
+            sentimentService.recordMessage(loungeId, "Fire drop! Love this banger 🔥", 1L, now);
+            sentimentService.recordMessage(loungeId, "Awesome vibes in the room!", 2L, now);
+
+            RoomSentimentSnapshot snapshot = sentimentService.getRoomSentiment(loungeId);
+            assertThat(snapshot.getRoomScore()).isGreaterThan(0.0);
+
+            Track current = createTrack(1L, "Current", "Artist", "124.00", "8A", "0.50");
+            Track highEnergyCand = createTrack(2L, "HighCand", "Artist", "124.00", "8A", "0.80");
+            Track lowEnergyCand = createTrack(3L, "LowCand", "Artist", "124.00", "8A", "0.50");
+
+            CandidateRankingContext context = CandidateRankingContext.builder()
+                    .currentTrack(current)
+                    .candidates(Arrays.asList(lowEnergyCand, highEnergyCand))
+                    .roomSentiment(snapshot)
+                    .build();
+
+            List<RankedCandidate> ranked = rankingService.rankCandidates(context);
+
+            assertThat(ranked).hasSize(2);
+            // High energy candidate ranks #1 because live chat sentiment shifted target energy up!
+            assertThat(ranked.get(0).getTrack().getId()).isEqualTo(2L);
+            assertThat(ranked.get(0).getScoreBreakdown().getReason()).contains("from sentiment");
+        }
+    }
+
+    // ==========================================
+    // 6. CONTEXT & REACTIVE EXECUTION TESTS
     // ==========================================
 
     @Nested
