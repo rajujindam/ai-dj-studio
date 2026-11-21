@@ -8,6 +8,8 @@ import com.aidjstudio.ai_dj_studio.dto.queue.AddQueueEntryRequest;
 import com.aidjstudio.ai_dj_studio.dto.queue.LoungePlaybackStateResponse;
 import com.aidjstudio.ai_dj_studio.dto.queue.QueueEntryResponse;
 import com.aidjstudio.ai_dj_studio.dto.queue.ReorderQueueEntryRequest;
+import com.aidjstudio.ai_dj_studio.dto.soundclash.OpenSoundclashBattleRequest;
+import com.aidjstudio.ai_dj_studio.dto.soundclash.SoundclashBattleResponse;
 import com.aidjstudio.ai_dj_studio.entity.DjLounge;
 import com.aidjstudio.ai_dj_studio.entity.LoungeParticipant;
 import com.aidjstudio.ai_dj_studio.service.ChatService;
@@ -15,6 +17,7 @@ import com.aidjstudio.ai_dj_studio.service.LoungeLifecycleService;
 import com.aidjstudio.ai_dj_studio.service.LoungeMembershipService;
 import com.aidjstudio.ai_dj_studio.service.PlaybackService;
 import com.aidjstudio.ai_dj_studio.service.QueueService;
+import com.aidjstudio.ai_dj_studio.service.SoundclashService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -35,6 +38,7 @@ public class LoungeController {
     private final QueueService queueService;
     private final PlaybackService playbackService;
     private final ChatService chatService;
+    private final SoundclashService soundclashService;
 
     @PostMapping
     public Mono<ResponseEntity<CreateLoungeResponse>> createLounge(
@@ -237,5 +241,28 @@ public class LoungeController {
         Long authenticatedUserId = Long.valueOf(jwt.getSubject());
 
         return chatService.getChatHistory(loungeId, limit, authenticatedUserId);
+    }
+
+    @PostMapping("/{loungeId}/soundclash/open")
+    public Mono<ResponseEntity<SoundclashBattleResponse>> openSoundclashBattle(
+            @PathVariable Long loungeId,
+            @Valid @RequestBody OpenSoundclashBattleRequest request,
+            @AuthenticationPrincipal Jwt jwt
+    ) {
+        Long authenticatedUserId = Long.valueOf(jwt.getSubject());
+
+        return soundclashService
+                .openBattle(loungeId, request, authenticatedUserId)
+                .map(response -> ResponseEntity.status(HttpStatus.CREATED).body(response));
+    }
+
+    @GetMapping("/{loungeId}/soundclash/active")
+    public Mono<ResponseEntity<SoundclashBattleResponse>> getActiveSoundclashBattle(
+            @PathVariable Long loungeId
+    ) {
+        return soundclashService
+                .getActiveBattle(loungeId)
+                .map(ResponseEntity::ok)
+                .defaultIfEmpty(ResponseEntity.noContent().build());
     }
 }

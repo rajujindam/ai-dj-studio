@@ -1,6 +1,7 @@
 package com.aidjstudio.ai_dj_studio.websocket;
 
 import com.aidjstudio.ai_dj_studio.dto.chat.SendChatMessageRequest;
+import com.aidjstudio.ai_dj_studio.dto.soundclash.OpenSoundclashBattleRequest;
 import com.aidjstudio.ai_dj_studio.dto.websocket.LoungeSnapshotPayload;
 import com.aidjstudio.ai_dj_studio.dto.websocket.WsConnectionPayload;
 import com.aidjstudio.ai_dj_studio.dto.websocket.WsErrorPayload;
@@ -16,6 +17,7 @@ import com.aidjstudio.ai_dj_studio.repository.QueueEntryRepository;
 import com.aidjstudio.ai_dj_studio.service.ChatService;
 import com.aidjstudio.ai_dj_studio.service.LoungeInteractionService;
 import com.aidjstudio.ai_dj_studio.service.QueueService;
+import com.aidjstudio.ai_dj_studio.service.SoundclashService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
@@ -35,6 +37,8 @@ import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.regex.Matcher;
@@ -53,6 +57,7 @@ public class LoungeWebSocketHandler implements WebSocketHandler {
     private final QueueService queueService;
     private final ChatService chatService;
     private final LoungeInteractionService loungeInteractionService;
+    private final SoundclashService soundclashService;
     private final LoungeSessionManager loungeSessionManager;
     private final ObjectMapper objectMapper;
 
@@ -65,6 +70,7 @@ public class LoungeWebSocketHandler implements WebSocketHandler {
             QueueService queueService,
             ChatService chatService,
             LoungeInteractionService loungeInteractionService,
+            SoundclashService soundclashService,
             LoungeSessionManager loungeSessionManager,
             ObjectMapper objectMapper
     ) {
@@ -75,6 +81,7 @@ public class LoungeWebSocketHandler implements WebSocketHandler {
         this.queueService = queueService;
         this.chatService = chatService;
         this.loungeInteractionService = loungeInteractionService;
+        this.soundclashService = soundclashService;
         this.loungeSessionManager = loungeSessionManager;
         this.objectMapper = objectMapper;
     }
@@ -94,6 +101,7 @@ public class LoungeWebSocketHandler implements WebSocketHandler {
                 loungeParticipantRepository,
                 queueEntryRepository,
                 queueService,
+                null,
                 null,
                 null,
                 loungeSessionManager,
@@ -404,6 +412,44 @@ public class LoungeWebSocketHandler implements WebSocketHandler {
                             return Mono.empty();
                         });
             }
+
+            if ("soundclash.open".equalsIgnoreCase(event)) {
+                if (soundclashService == null) {
+                    sendErrorMessage(session, loungeId, "SOUNDCLASH_UNAVAILABLE", "Soundclash service is not configured");
+                    return Mono.empty();
+                }
+
+                Object payloadObj = map.get("payload");
+                List<Long> trackIds = new ArrayList<>();
+                Integer duration = null;
+
+                if (payloadObj instanceof Map<?, ?> payloadMap) {
+                    Object durObj = payloadMap.get("durationSeconds");
+                    if (durObj instanceof Number n) {
+                        duration = n.intValue();
+                    }
+                    Object tracksObj = payloadMap.get("trackIds");
+                    if (tracksObj instanceof List<?> list) {
+                        for (Object item : list) {
+                            if (item instanceof Number num) {
+                                trackIds.add(num.longValue());
+                            }
+                        }
+                    }
+                }
+
+                OpenSoundclashBattleRequest openReq = OpenSoundclashBattleRequest.builder()
+                        .trackIds(trackIds)
+                        .durationSeconds(duration)
+                        .build();
+
+                return soundclashService.openBattle(loungeId, openReq, userId)
+                        .onErrorResume(ex -> {
+                            sendErrorMessage(session, loungeId, "SOUNDCLASH_OPEN_FAILED", ex.getMessage());
+                            return Mono.empty();
+                        })
+                        .then();
+            }
         } catch (Exception e) {
             log.debug("Unrecognized inbound WebSocket message payload: {}", payloadText);
         }
@@ -439,20 +485,32 @@ public class LoungeWebSocketHandler implements WebSocketHandler {
     }
 
     private Mono<LoungeSnapshotPayload> buildSnapshotPayload(Long loungeId, DjLounge lounge) {
-        return queueEntryRepository.findByLoungeIdOrderByPositionAsc(loungeId)
+        Mono<List<com.aidjstudio.ai_dj_studio.dto.queue.QueueEntryResponse>> nextUpMono = queueEntryRepository
+                .findByLoungeIdOrderByPositionAsc(loungeId)
                 .map(queueService::toResponseDto)
-                .collectList()
-                .map(nextUp -> LoungeSnapshotPayload.builder()
-                        .loungeId(loungeId)
-                        .status(lounge.getStatus())
-                        .hostUserId(lounge.getHostUserId())
-                        .hostConnected(loungeSessionManager.isHostConnected(loungeId))
-                        .queueFrozen(loungeSessionManager.isQueueFrozen(loungeId))
-                        .currentTrackId(lounge.getCurrentTrackId())
-                        .nextUp(nextUp)
-                        .activeSoundclash(null)
-                        .participantCount(loungeSessionManager.getActiveCount(loungeId))
-                        .build());
+                .collectList();
+
+        Mono<Object> soundclashMono = (soundclashService != null)
+                ? soundclashService.getActiveBattle(loungeId).cast(Object.class).defaultIfEmpty(Optional.empty())
+                : Mono.just(Optional.empty());
+
+        return Mono.zip(nextUpMono, soundclashMono)
+                .map(tuple -> {
+                    Object battleObj = tuple.getT2();
+                    Object activeSoundclash = (battleObj instanceof Optional<?> opt && opt.isEmpty()) ? null : battleObj;
+
+                    return LoungeSnapshotPayload.builder()
+                            .loungeId(loungeId)
+                            .status(lounge.getStatus())
+                            .hostUserId(lounge.getHostUserId())
+                            .hostConnected(loungeSessionManager.isHostConnected(loungeId))
+                            .queueFrozen(loungeSessionManager.isQueueFrozen(loungeId))
+                            .currentTrackId(lounge.getCurrentTrackId())
+                            .nextUp(tuple.getT1())
+                            .activeSoundclash(activeSoundclash)
+                            .participantCount(loungeSessionManager.getActiveCount(loungeId))
+                            .build();
+                });
     }
 
     private WsEventEnvelope<WsPresencePayload> buildPresenceEnvelope(Long loungeId, Long userId, String role, String action, String eventName) {
