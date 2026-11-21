@@ -14,6 +14,7 @@ import com.aidjstudio.ai_dj_studio.repository.DjLoungeRepository;
 import com.aidjstudio.ai_dj_studio.repository.LoungeParticipantRepository;
 import com.aidjstudio.ai_dj_studio.repository.QueueEntryRepository;
 import com.aidjstudio.ai_dj_studio.service.ChatService;
+import com.aidjstudio.ai_dj_studio.service.LoungeInteractionService;
 import com.aidjstudio.ai_dj_studio.service.QueueService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -51,6 +52,7 @@ public class LoungeWebSocketHandler implements WebSocketHandler {
     private final QueueEntryRepository queueEntryRepository;
     private final QueueService queueService;
     private final ChatService chatService;
+    private final LoungeInteractionService loungeInteractionService;
     private final LoungeSessionManager loungeSessionManager;
     private final ObjectMapper objectMapper;
 
@@ -62,6 +64,7 @@ public class LoungeWebSocketHandler implements WebSocketHandler {
             QueueEntryRepository queueEntryRepository,
             QueueService queueService,
             ChatService chatService,
+            LoungeInteractionService loungeInteractionService,
             LoungeSessionManager loungeSessionManager,
             ObjectMapper objectMapper
     ) {
@@ -71,6 +74,7 @@ public class LoungeWebSocketHandler implements WebSocketHandler {
         this.queueEntryRepository = queueEntryRepository;
         this.queueService = queueService;
         this.chatService = chatService;
+        this.loungeInteractionService = loungeInteractionService;
         this.loungeSessionManager = loungeSessionManager;
         this.objectMapper = objectMapper;
     }
@@ -90,6 +94,7 @@ public class LoungeWebSocketHandler implements WebSocketHandler {
                 loungeParticipantRepository,
                 queueEntryRepository,
                 queueService,
+                null,
                 null,
                 loungeSessionManager,
                 objectMapper
@@ -335,6 +340,69 @@ public class LoungeWebSocketHandler implements WebSocketHandler {
                             return Mono.empty();
                         })
                         .then();
+            }
+
+            if ("typing".equalsIgnoreCase(event) || "chat.typing".equalsIgnoreCase(event) || "lounge.typing".equalsIgnoreCase(event)) {
+                if (loungeInteractionService == null) {
+                    return Mono.empty();
+                }
+
+                boolean isTyping = true;
+                Object payloadObj = map.get("payload");
+                if (payloadObj instanceof Map<?, ?> payloadMap) {
+                    Object typingVal = payloadMap.get("typing");
+                    if (typingVal instanceof Boolean b) {
+                        isTyping = b;
+                    } else if (typingVal != null) {
+                        isTyping = Boolean.parseBoolean(typingVal.toString());
+                    }
+                }
+
+                return loungeInteractionService.sendTypingIndicator(loungeId, userId, isTyping)
+                        .onErrorResume(ex -> {
+                            log.debug("Typing indicator failed for user {} in lounge {}: {}", userId, loungeId, ex.getMessage());
+                            return Mono.empty();
+                        });
+            }
+
+            if ("reaction".equalsIgnoreCase(event) || "chat.reaction".equalsIgnoreCase(event) || "lounge.reaction".equalsIgnoreCase(event)) {
+                if (loungeInteractionService == null) {
+                    return Mono.empty();
+                }
+
+                String emoji = null;
+                String targetType = "LOUNGE";
+                Long targetId = null;
+
+                Object payloadObj = map.get("payload");
+                if (payloadObj instanceof Map<?, ?> payloadMap) {
+                    Object emojiObj = payloadMap.get("emoji");
+                    if (emojiObj != null) {
+                        emoji = emojiObj.toString();
+                    }
+                    Object targetTypeObj = payloadMap.get("targetType");
+                    if (targetTypeObj != null) {
+                        targetType = targetTypeObj.toString();
+                    }
+                    Object targetIdObj = payloadMap.get("targetId");
+                    if (targetIdObj instanceof Number num) {
+                        targetId = num.longValue();
+                    }
+                } else if (payloadObj != null) {
+                    emoji = payloadObj.toString();
+                }
+
+                if (emoji == null || emoji.isBlank()) {
+                    sendErrorMessage(session, loungeId, "INVALID_REACTION", "Emoji cannot be blank");
+                    return Mono.empty();
+                }
+
+                return loungeInteractionService.sendReaction(loungeId, userId, emoji, targetType, targetId)
+                        .onErrorResume(ex -> {
+                            log.debug("Reaction rejected for user {} in lounge {}: {}", userId, loungeId, ex.getMessage());
+                            sendErrorMessage(session, loungeId, "INVALID_REACTION", ex.getMessage());
+                            return Mono.empty();
+                        });
             }
         } catch (Exception e) {
             log.debug("Unrecognized inbound WebSocket message payload: {}", payloadText);
