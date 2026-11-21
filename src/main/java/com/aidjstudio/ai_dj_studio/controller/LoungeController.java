@@ -1,5 +1,7 @@
 package com.aidjstudio.ai_dj_studio.controller;
 
+import com.aidjstudio.ai_dj_studio.dto.chat.ChatMessageResponse;
+import com.aidjstudio.ai_dj_studio.dto.chat.SendChatMessageRequest;
 import com.aidjstudio.ai_dj_studio.dto.lounge.CreateLoungeRequest;
 import com.aidjstudio.ai_dj_studio.dto.lounge.CreateLoungeResponse;
 import com.aidjstudio.ai_dj_studio.dto.queue.AddQueueEntryRequest;
@@ -8,6 +10,7 @@ import com.aidjstudio.ai_dj_studio.dto.queue.QueueEntryResponse;
 import com.aidjstudio.ai_dj_studio.dto.queue.ReorderQueueEntryRequest;
 import com.aidjstudio.ai_dj_studio.entity.DjLounge;
 import com.aidjstudio.ai_dj_studio.entity.LoungeParticipant;
+import com.aidjstudio.ai_dj_studio.service.ChatService;
 import com.aidjstudio.ai_dj_studio.service.LoungeLifecycleService;
 import com.aidjstudio.ai_dj_studio.service.LoungeMembershipService;
 import com.aidjstudio.ai_dj_studio.service.PlaybackService;
@@ -31,6 +34,7 @@ public class LoungeController {
     private final LoungeMembershipService loungeMembershipService;
     private final QueueService queueService;
     private final PlaybackService playbackService;
+    private final ChatService chatService;
 
     @PostMapping
     public Mono<ResponseEntity<CreateLoungeResponse>> createLounge(
@@ -209,5 +213,29 @@ public class LoungeController {
         return playbackService
                 .promoteTrackToNowPlaying(loungeId, queueEntryId, authenticatedUserId)
                 .map(ResponseEntity::ok);
+    }
+
+    @PostMapping("/{loungeId}/chat")
+    public Mono<ResponseEntity<ChatMessageResponse>> sendChatMessage(
+            @PathVariable Long loungeId,
+            @Valid @RequestBody SendChatMessageRequest request,
+            @AuthenticationPrincipal Jwt jwt
+    ) {
+        Long authenticatedUserId = Long.valueOf(jwt.getSubject());
+
+        return chatService
+                .sendMessage(loungeId, request, authenticatedUserId)
+                .map(response -> ResponseEntity.status(HttpStatus.CREATED).body(response));
+    }
+
+    @GetMapping("/{loungeId}/chat")
+    public Flux<ChatMessageResponse> getChatHistory(
+            @PathVariable Long loungeId,
+            @RequestParam(defaultValue = "50") int limit,
+            @AuthenticationPrincipal Jwt jwt
+    ) {
+        Long authenticatedUserId = Long.valueOf(jwt.getSubject());
+
+        return chatService.getChatHistory(loungeId, limit, authenticatedUserId);
     }
 }

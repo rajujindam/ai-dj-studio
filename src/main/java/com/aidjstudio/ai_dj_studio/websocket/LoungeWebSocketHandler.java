@@ -1,5 +1,6 @@
 package com.aidjstudio.ai_dj_studio.websocket;
 
+import com.aidjstudio.ai_dj_studio.dto.chat.SendChatMessageRequest;
 import com.aidjstudio.ai_dj_studio.dto.websocket.LoungeSnapshotPayload;
 import com.aidjstudio.ai_dj_studio.dto.websocket.WsConnectionPayload;
 import com.aidjstudio.ai_dj_studio.dto.websocket.WsErrorPayload;
@@ -12,9 +13,10 @@ import com.aidjstudio.ai_dj_studio.entity.LoungeStatus;
 import com.aidjstudio.ai_dj_studio.repository.DjLoungeRepository;
 import com.aidjstudio.ai_dj_studio.repository.LoungeParticipantRepository;
 import com.aidjstudio.ai_dj_studio.repository.QueueEntryRepository;
+import com.aidjstudio.ai_dj_studio.service.ChatService;
 import com.aidjstudio.ai_dj_studio.service.QueueService;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
 import org.springframework.security.oauth2.jwt.ReactiveJwtDecoder;
 import org.springframework.stereotype.Component;
@@ -39,7 +41,6 @@ import java.util.regex.Pattern;
 
 @Slf4j
 @Component
-@RequiredArgsConstructor
 public class LoungeWebSocketHandler implements WebSocketHandler {
 
     private static final Pattern LOUNGE_PATH_PATTERN = Pattern.compile("^/ws/lounges/(\\d+)/?$");
@@ -49,8 +50,51 @@ public class LoungeWebSocketHandler implements WebSocketHandler {
     private final LoungeParticipantRepository loungeParticipantRepository;
     private final QueueEntryRepository queueEntryRepository;
     private final QueueService queueService;
+    private final ChatService chatService;
     private final LoungeSessionManager loungeSessionManager;
     private final ObjectMapper objectMapper;
+
+    @Autowired
+    public LoungeWebSocketHandler(
+            ReactiveJwtDecoder reactiveJwtDecoder,
+            DjLoungeRepository djLoungeRepository,
+            LoungeParticipantRepository loungeParticipantRepository,
+            QueueEntryRepository queueEntryRepository,
+            QueueService queueService,
+            ChatService chatService,
+            LoungeSessionManager loungeSessionManager,
+            ObjectMapper objectMapper
+    ) {
+        this.reactiveJwtDecoder = reactiveJwtDecoder;
+        this.djLoungeRepository = djLoungeRepository;
+        this.loungeParticipantRepository = loungeParticipantRepository;
+        this.queueEntryRepository = queueEntryRepository;
+        this.queueService = queueService;
+        this.chatService = chatService;
+        this.loungeSessionManager = loungeSessionManager;
+        this.objectMapper = objectMapper;
+    }
+
+    public LoungeWebSocketHandler(
+            ReactiveJwtDecoder reactiveJwtDecoder,
+            DjLoungeRepository djLoungeRepository,
+            LoungeParticipantRepository loungeParticipantRepository,
+            QueueEntryRepository queueEntryRepository,
+            QueueService queueService,
+            LoungeSessionManager loungeSessionManager,
+            ObjectMapper objectMapper
+    ) {
+        this(
+                reactiveJwtDecoder,
+                djLoungeRepository,
+                loungeParticipantRepository,
+                queueEntryRepository,
+                queueService,
+                null,
+                loungeSessionManager,
+                objectMapper
+        );
+    }
 
     @Override
     public Mono<Void> handle(WebSocketSession session) {
@@ -251,11 +295,66 @@ public class LoungeWebSocketHandler implements WebSocketHandler {
             if ("resync".equalsIgnoreCase(event) || "lounge.sync.resync".equalsIgnoreCase(event) || "get_snapshot".equalsIgnoreCase(event)) {
                 return sendSnapshotToSession(session, loungeId);
             }
+
+            if ("chat.send".equalsIgnoreCase(event) || "chat.message".equalsIgnoreCase(event)) {
+                if (chatService == null) {
+                    sendErrorMessage(session, loungeId, "CHAT_UNAVAILABLE", "Chat service is not configured");
+                    return Mono.empty();
+                }
+
+                Object payloadObj = map.get("payload");
+                String body = null;
+                String msgType = "TEXT";
+                if (payloadObj instanceof Map<?, ?> payloadMap) {
+                    Object bodyObj = payloadMap.get("body");
+                    if (bodyObj != null) {
+                        body = bodyObj.toString();
+                    }
+                    Object typeObj = payloadMap.get("msgType");
+                    if (typeObj != null) {
+                        msgType = typeObj.toString();
+                    }
+                } else if (payloadObj != null) {
+                    body = payloadObj.toString();
+                }
+
+                if (body == null || body.isBlank()) {
+                    sendErrorMessage(session, loungeId, "INVALID_CHAT_BODY", "Chat message body cannot be blank");
+                    return Mono.empty();
+                }
+
+                SendChatMessageRequest chatRequest = SendChatMessageRequest.builder()
+                        .body(body)
+                        .msgType(msgType)
+                        .build();
+
+                return chatService.sendMessage(loungeId, chatRequest, userId)
+                        .onErrorResume(ex -> {
+                            log.warn("Failed to process inbound chat message from user {} in lounge {}: {}", userId, loungeId, ex.getMessage());
+                            sendErrorMessage(session, loungeId, "CHAT_FAILED", ex.getMessage());
+                            return Mono.empty();
+                        })
+                        .then();
+            }
         } catch (Exception e) {
             log.debug("Unrecognized inbound WebSocket message payload: {}", payloadText);
         }
 
         return Mono.empty();
+    }
+
+    private void sendErrorMessage(WebSocketSession session, Long loungeId, String code, String message) {
+        WsEventEnvelope<WsErrorPayload> errorEnvelope = WsEventEnvelope.<WsErrorPayload>builder()
+                .event("error")
+                .loungeId(loungeId)
+                .payload(WsErrorPayload.builder()
+                        .code(code)
+                        .message(message)
+                        .build())
+                .ts(Instant.now())
+                .build();
+
+        loungeSessionManager.sendToSession(session, errorEnvelope);
     }
 
     private Mono<Void> sendSnapshotToSession(WebSocketSession session, Long loungeId) {

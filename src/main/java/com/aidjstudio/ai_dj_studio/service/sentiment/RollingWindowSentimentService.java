@@ -4,6 +4,7 @@ import com.aidjstudio.ai_dj_studio.dto.sentiment.MessageSentiment;
 import com.aidjstudio.ai_dj_studio.dto.sentiment.RoomSentimentSnapshot;
 import com.aidjstudio.ai_dj_studio.dto.sentiment.SentimentBucket;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 
@@ -42,6 +43,7 @@ public class RollingWindowSentimentService {
     // In-memory sliding window per lounge
     private final Map<Long, Deque<MessageSentiment>> loungeWindows = new ConcurrentHashMap<>();
 
+    @Autowired
     public RollingWindowSentimentService(SentimentScorer sentimentScorer) {
         this(sentimentScorer, DEFAULT_WINDOW_SECONDS, DEFAULT_MAX_SAMPLES);
     }
