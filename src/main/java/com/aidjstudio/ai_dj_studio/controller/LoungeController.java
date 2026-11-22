@@ -10,6 +10,7 @@ import com.aidjstudio.ai_dj_studio.dto.queue.QueueEntryResponse;
 import com.aidjstudio.ai_dj_studio.dto.queue.ReorderQueueEntryRequest;
 import com.aidjstudio.ai_dj_studio.dto.soundclash.OpenSoundclashBattleRequest;
 import com.aidjstudio.ai_dj_studio.dto.soundclash.SoundclashBattleResponse;
+import com.aidjstudio.ai_dj_studio.dto.soundclash.VoteSoundclashRequest;
 import com.aidjstudio.ai_dj_studio.entity.DjLounge;
 import com.aidjstudio.ai_dj_studio.entity.LoungeParticipant;
 import com.aidjstudio.ai_dj_studio.service.ChatService;
@@ -264,5 +265,30 @@ public class LoungeController {
                 .getActiveBattle(loungeId)
                 .map(ResponseEntity::ok)
                 .defaultIfEmpty(ResponseEntity.noContent().build());
+    }
+
+    @PostMapping("/{loungeId}/soundclash/vote")
+    public Mono<ResponseEntity<SoundclashBattleResponse>> voteSoundclash(
+            @PathVariable Long loungeId,
+            @Valid @RequestBody VoteSoundclashRequest request,
+            @AuthenticationPrincipal Jwt jwt
+    ) {
+        Long authenticatedUserId = Long.valueOf(jwt.getSubject());
+
+        return soundclashService
+                .voteCandidate(loungeId, request.getCandidateId(), authenticatedUserId)
+                .map(ResponseEntity::ok);
+    }
+
+    @PostMapping("/{loungeId}/soundclash/resolve")
+    public Mono<ResponseEntity<SoundclashBattleResponse>> resolveSoundclashBattle(
+            @PathVariable Long loungeId,
+            @AuthenticationPrincipal Jwt jwt
+    ) {
+        Long authenticatedUserId = Long.valueOf(jwt.getSubject());
+
+        return soundclashService
+                .resolveBattle(loungeId, authenticatedUserId)
+                .map(ResponseEntity::ok);
     }
 }

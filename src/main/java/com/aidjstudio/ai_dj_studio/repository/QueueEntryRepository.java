@@ -12,4 +12,6 @@ public interface QueueEntryRepository extends ReactiveCrudRepository<QueueEntry,
     Mono<Boolean> existsByLoungeIdAndTrackId(Long loungeId, Long trackId);
 
     Mono<QueueEntry> findByIdAndLoungeId(Long id, Long loungeId);
+
+    Mono<QueueEntry> findByLoungeIdAndTrackId(Long loungeId, Long trackId);
 }

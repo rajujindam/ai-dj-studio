@@ -450,6 +450,50 @@ public class LoungeWebSocketHandler implements WebSocketHandler {
                         })
                         .then();
             }
+
+            if ("soundclash.vote".equalsIgnoreCase(event)) {
+                if (soundclashService == null) {
+                    sendErrorMessage(session, loungeId, "SOUNDCLASH_UNAVAILABLE", "Soundclash service is not configured");
+                    return Mono.empty();
+                }
+
+                Object payloadObj = map.get("payload");
+                Long candidateId = null;
+                if (payloadObj instanceof Map<?, ?> payloadMap) {
+                    Object candObj = payloadMap.get("candidateId");
+                    if (candObj instanceof Number n) {
+                        candidateId = n.longValue();
+                    }
+                } else if (payloadObj instanceof Number num) {
+                    candidateId = num.longValue();
+                }
+
+                if (candidateId == null) {
+                    sendErrorMessage(session, loungeId, "INVALID_SOUNDCLASH_VOTE", "Candidate ID is required");
+                    return Mono.empty();
+                }
+
+                return soundclashService.voteCandidate(loungeId, candidateId, userId)
+                        .onErrorResume(ex -> {
+                            sendErrorMessage(session, loungeId, "SOUNDCLASH_VOTE_FAILED", ex.getMessage());
+                            return Mono.empty();
+                        })
+                        .then();
+            }
+
+            if ("soundclash.resolve".equalsIgnoreCase(event)) {
+                if (soundclashService == null) {
+                    sendErrorMessage(session, loungeId, "SOUNDCLASH_UNAVAILABLE", "Soundclash service is not configured");
+                    return Mono.empty();
+                }
+
+                return soundclashService.resolveBattle(loungeId, userId)
+                        .onErrorResume(ex -> {
+                            sendErrorMessage(session, loungeId, "SOUNDCLASH_RESOLVE_FAILED", ex.getMessage());
+                            return Mono.empty();
+                        })
+                        .then();
+            }
         } catch (Exception e) {
             log.debug("Unrecognized inbound WebSocket message payload: {}", payloadText);
         }
