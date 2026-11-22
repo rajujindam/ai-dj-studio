@@ -36,6 +36,7 @@ class LoungeMembershipServiceTest {
         lounge.setId(1L);
         lounge.setHostUserId(100L);
         lounge.setStatus(status);
+        lounge.setIsLocked(false);
         return lounge;
     }
 
@@ -125,6 +126,25 @@ class LoungeMembershipServiceTest {
                         loungeMembershipService.joinLounge(1L, 200L)
                 )
                 .expectError(IllegalStateException.class)
+                .verify();
+
+        verify(loungeParticipantRepository, never())
+                .save(any(LoungeParticipant.class));
+    }
+
+    @Test
+    void userCannotJoinLockedLounge() {
+        DjLounge lounge = createLounge(LoungeStatus.LIVE);
+        lounge.setIsLocked(true);
+
+        when(djLoungeRepository.findById(1L))
+                .thenReturn(Mono.just(lounge));
+
+        StepVerifier.create(
+                        loungeMembershipService.joinLounge(1L, 200L)
+                )
+                .expectErrorMatches(ex -> ex instanceof IllegalStateException
+                        && ex.getMessage().contains("Lounge is locked by the host"))
                 .verify();
 
         verify(loungeParticipantRepository, never())
@@ -301,6 +321,21 @@ class LoungeMembershipServiceTest {
         StepVerifier.create(loungeMembershipService.joinLoungeIdempotent(1L, 200L))
                 .expectNextMatches(p -> p.getId().equals(1L) && p.getUserId().equals(200L))
                 .verifyComplete();
+
+        verify(loungeParticipantRepository, never()).save(any());
+    }
+
+    @Test
+    void joinLoungeIdempotent_whenLoungeIsLocked_throwsIllegalStateException() {
+        DjLounge lounge = createLounge(LoungeStatus.LIVE);
+        lounge.setIsLocked(true);
+
+        when(djLoungeRepository.findById(1L)).thenReturn(Mono.just(lounge));
+
+        StepVerifier.create(loungeMembershipService.joinLoungeIdempotent(1L, 200L))
+                .expectErrorMatches(ex -> ex instanceof IllegalStateException
+                        && ex.getMessage().contains("Lounge is locked by the host"))
+                .verify();
 
         verify(loungeParticipantRepository, never()).save(any());
     }

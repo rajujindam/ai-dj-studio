@@ -180,17 +180,17 @@ class ChatServiceTest {
             SendChatMessageRequest request = SendChatMessageRequest.builder().body("   ").build();
 
             StepVerifier.create(chatService.sendMessage(10L, request, 200L))
-                    .expectErrorMatches(ex -> ex instanceof IllegalArgumentException && ex.getMessage().contains("cannot be blank"))
+                    .expectErrorMatches(ex -> ex instanceof IllegalArgumentException && ex.getMessage().contains("Message body cannot be blank"))
                     .verify();
 
             verifyNoInteractions(chatMessageRepository);
         }
 
         @Test
-        @DisplayName("Should reject oversized message body (> 500 characters)")
-        void sendMessage_oversizedBody_throwsException() {
-            String longText = "a".repeat(501);
-            SendChatMessageRequest request = SendChatMessageRequest.builder().body(longText).build();
+        @DisplayName("Should reject message exceeding max length")
+        void sendMessage_exceedsMaxLength_throwsException() {
+            String overlyLongMessage = "a".repeat(501);
+            SendChatMessageRequest request = SendChatMessageRequest.builder().body(overlyLongMessage).build();
 
             StepVerifier.create(chatService.sendMessage(10L, request, 200L))
                     .expectErrorMatches(ex -> ex instanceof IllegalArgumentException && ex.getMessage().contains("exceeds maximum length"))
@@ -237,6 +237,23 @@ class ChatServiceTest {
 
             StepVerifier.create(chatService.sendMessage(10L, request, 999L))
                     .expectError(AccessDeniedException.class)
+                    .verify();
+
+            verifyNoInteractions(chatMessageRepository);
+        }
+
+        @Test
+        @DisplayName("Muted participant cannot send chat message and is rejected with IllegalStateException")
+        void sendMessage_mutedParticipant_throwsIllegalStateException() {
+            activeParticipant.setIsMuted(true);
+            SendChatMessageRequest request = SendChatMessageRequest.builder().body("Can you hear me?").build();
+            when(djLoungeRepository.findById(10L)).thenReturn(Mono.just(testLounge));
+            when(loungeParticipantRepository.findByLoungeIdAndUserIdAndLeftAtIsNull(10L, 200L))
+                    .thenReturn(Mono.just(activeParticipant));
+
+            StepVerifier.create(chatService.sendMessage(10L, request, 200L))
+                    .expectErrorMatches(ex -> ex instanceof IllegalStateException
+                            && ex.getMessage().contains("User is muted in this lounge"))
                     .verify();
 
             verifyNoInteractions(chatMessageRepository);

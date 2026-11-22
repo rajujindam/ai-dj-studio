@@ -32,6 +32,12 @@ public class LoungeMembershipService {
                         ));
                     }
 
+                    if (Boolean.TRUE.equals(lounge.getIsLocked())) {
+                        return Mono.error(new IllegalStateException(
+                                "Lounge is locked by the host"
+                        ));
+                    }
+
                     if (lounge.getHostUserId().equals(authenticatedUserId)) {
                         return Mono.error(new IllegalStateException(
                                 "The lounge host does not need participant membership"
@@ -83,6 +89,12 @@ public class LoungeMembershipService {
                         ));
                     }
 
+                    if (Boolean.TRUE.equals(lounge.getIsLocked())) {
+                        return Mono.error(new IllegalStateException(
+                                "Lounge is locked by the host"
+                        ));
+                    }
+
                     if (lounge.getHostUserId().equals(authenticatedUserId)) {
                         return Mono.error(new IllegalStateException(
                                 "The lounge host does not need participant membership"
@@ -130,7 +142,7 @@ public class LoungeMembershipService {
                                         new IllegalStateException(
                                                 "User is not an active participant"
                                         )
-                                			))
+                                		))
                                 .flatMap(participant -> {
                                     participant.setLeftAt(
                                             LocalDateTime.now()

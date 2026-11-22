@@ -56,6 +56,7 @@ public class ChatService {
         }
 
         return verifyLoungeAndMembership(loungeId, authenticatedUserId)
+                .flatMap(lounge -> verifyNotMuted(lounge, authenticatedUserId))
                 .flatMap(lounge -> {
                     // Sanitize message body against XSS attacks before storing/broadcasting
                     String sanitizedBody = HtmlUtils.htmlEscape(request.getBody().trim());
@@ -102,6 +103,21 @@ public class ChatService {
         return verifyLoungeAndMembership(loungeId, authenticatedUserId)
                 .flatMapMany(lounge -> chatMessageRepository.findRecentByLoungeId(loungeId, effectiveLimit))
                 .map(this::toResponseDto);
+    }
+
+    private Mono<DjLounge> verifyNotMuted(DjLounge lounge, Long authenticatedUserId) {
+        if (lounge.getHostUserId().equals(authenticatedUserId)) {
+            return Mono.just(lounge);
+        }
+
+        return loungeParticipantRepository
+                .findByLoungeIdAndUserIdAndLeftAtIsNull(lounge.getId(), authenticatedUserId)
+                .flatMap(participant -> {
+                    if (Boolean.TRUE.equals(participant.getIsMuted())) {
+                        return Mono.error(new IllegalStateException("User is muted in this lounge"));
+                    }
+                    return Mono.just(lounge);
+                });
     }
 
     private Mono<DjLounge> verifyLoungeAndMembership(Long loungeId, Long authenticatedUserId) {

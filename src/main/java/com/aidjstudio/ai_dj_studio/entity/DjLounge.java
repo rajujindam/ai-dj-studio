@@ -48,6 +48,10 @@ public class DjLounge {
     @Column("max_participants")
     private Integer maxParticipants;
 
+    @Column("is_locked")
+    @Builder.Default
+    private Boolean isLocked = false;
+
     @Column("created_at")
     private LocalDateTime createdAt;
 
@@ -66,6 +70,6 @@ public class DjLounge {
             LocalDateTime createdAt,
             LocalDateTime endedAt
     ) {
-        this(id, hostUserId, vibeProfile, currentTrackId, status, bpmTolerancePct, soundclashEnabled, aiVerbosity, null, 50, createdAt, endedAt);
+        this(id, hostUserId, vibeProfile, currentTrackId, status, bpmTolerancePct, soundclashEnabled, aiVerbosity, null, 50, false, createdAt, endedAt);
     }
 }

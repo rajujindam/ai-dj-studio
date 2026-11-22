@@ -4,6 +4,10 @@ import com.aidjstudio.ai_dj_studio.dto.chat.ChatMessageResponse;
 import com.aidjstudio.ai_dj_studio.dto.chat.SendChatMessageRequest;
 import com.aidjstudio.ai_dj_studio.dto.lounge.CreateLoungeRequest;
 import com.aidjstudio.ai_dj_studio.dto.lounge.CreateLoungeResponse;
+import com.aidjstudio.ai_dj_studio.dto.moderation.LockLoungeRequest;
+import com.aidjstudio.ai_dj_studio.dto.moderation.MuteParticipantRequest;
+import com.aidjstudio.ai_dj_studio.dto.moderation.TransferHostRequest;
+import com.aidjstudio.ai_dj_studio.dto.moderation.UpdateRoleRequest;
 import com.aidjstudio.ai_dj_studio.dto.queue.AddQueueEntryRequest;
 import com.aidjstudio.ai_dj_studio.dto.queue.LoungePlaybackStateResponse;
 import com.aidjstudio.ai_dj_studio.dto.queue.QueueEntryResponse;
@@ -16,6 +20,7 @@ import com.aidjstudio.ai_dj_studio.entity.LoungeParticipant;
 import com.aidjstudio.ai_dj_studio.service.ChatService;
 import com.aidjstudio.ai_dj_studio.service.LoungeLifecycleService;
 import com.aidjstudio.ai_dj_studio.service.LoungeMembershipService;
+import com.aidjstudio.ai_dj_studio.service.LoungeModerationService;
 import com.aidjstudio.ai_dj_studio.service.PlaybackService;
 import com.aidjstudio.ai_dj_studio.service.QueueService;
 import com.aidjstudio.ai_dj_studio.service.SoundclashService;
@@ -40,6 +45,7 @@ public class LoungeController {
     private final PlaybackService playbackService;
     private final ChatService chatService;
     private final SoundclashService soundclashService;
+    private final LoungeModerationService loungeModerationService;
 
     @PostMapping
     public Mono<ResponseEntity<CreateLoungeResponse>> createLounge(
@@ -289,6 +295,75 @@ public class LoungeController {
 
         return soundclashService
                 .resolveBattle(loungeId, authenticatedUserId)
+                .map(ResponseEntity::ok);
+    }
+
+    @PostMapping("/{loungeId}/participants/{userId}/mute")
+    public Mono<ResponseEntity<LoungeParticipant>> muteParticipant(
+            @PathVariable Long loungeId,
+            @PathVariable Long userId,
+            @RequestBody(required = false) MuteParticipantRequest request,
+            @AuthenticationPrincipal Jwt jwt
+    ) {
+        Long authenticatedUserId = Long.valueOf(jwt.getSubject());
+        boolean muted = request == null || request.getMuted() == null || request.getMuted();
+
+        return loungeModerationService
+                .muteParticipant(loungeId, userId, muted, authenticatedUserId)
+                .map(ResponseEntity::ok);
+    }
+
+    @DeleteMapping("/{loungeId}/participants/{userId}")
+    public Mono<ResponseEntity<LoungeParticipant>> removeParticipant(
+            @PathVariable Long loungeId,
+            @PathVariable Long userId,
+            @AuthenticationPrincipal Jwt jwt
+    ) {
+        Long authenticatedUserId = Long.valueOf(jwt.getSubject());
+
+        return loungeModerationService
+                .removeParticipant(loungeId, userId, authenticatedUserId)
+                .map(ResponseEntity::ok);
+    }
+
+    @PutMapping("/{loungeId}/lock")
+    public Mono<ResponseEntity<DjLounge>> setLoungeLocked(
+            @PathVariable Long loungeId,
+            @RequestBody(required = false) LockLoungeRequest request,
+            @AuthenticationPrincipal Jwt jwt
+    ) {
+        Long authenticatedUserId = Long.valueOf(jwt.getSubject());
+        boolean locked = request == null || request.getLocked() == null || request.getLocked();
+
+        return loungeModerationService
+                .setLoungeLocked(loungeId, locked, authenticatedUserId)
+                .map(ResponseEntity::ok);
+    }
+
+    @PutMapping("/{loungeId}/participants/{userId}/role")
+    public Mono<ResponseEntity<LoungeParticipant>> updateParticipantRole(
+            @PathVariable Long loungeId,
+            @PathVariable Long userId,
+            @Valid @RequestBody UpdateRoleRequest request,
+            @AuthenticationPrincipal Jwt jwt
+    ) {
+        Long authenticatedUserId = Long.valueOf(jwt.getSubject());
+
+        return loungeModerationService
+                .updateParticipantRole(loungeId, userId, request.getRole(), authenticatedUserId)
+                .map(ResponseEntity::ok);
+    }
+
+    @PostMapping("/{loungeId}/transfer-host")
+    public Mono<ResponseEntity<DjLounge>> transferHost(
+            @PathVariable Long loungeId,
+            @Valid @RequestBody TransferHostRequest request,
+            @AuthenticationPrincipal Jwt jwt
+    ) {
+        Long authenticatedUserId = Long.valueOf(jwt.getSubject());
+
+        return loungeModerationService
+                .transferHost(loungeId, request.getNewHostUserId(), authenticatedUserId)
                 .map(ResponseEntity::ok);
     }
 }

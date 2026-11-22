@@ -1,14 +1,18 @@
 package com.aidjstudio.ai_dj_studio.websocket;
 
+import com.aidjstudio.ai_dj_studio.dto.websocket.WsErrorPayload;
 import com.aidjstudio.ai_dj_studio.dto.websocket.WsEventEnvelope;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import org.springframework.web.reactive.socket.CloseStatus;
 import org.springframework.web.reactive.socket.WebSocketSession;
 import reactor.core.publisher.Sinks;
 import tools.jackson.databind.ObjectMapper;
 
+import java.time.Instant;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -177,6 +181,56 @@ public class LoungeSessionManager {
                 ctx.send(objectMapper.writeValueAsString(envelope));
             } catch (Exception e) {
                 log.error("Failed to serialize WebSocket event for session {}", session.getId(), e);
+            }
+        }
+    }
+
+    public void disconnectUser(Long loungeId, Long userId, String reason) {
+        Map<Long, Set<String>> userMap = loungeUserSessions.get(loungeId);
+        if (userMap != null) {
+            Set<String> sessionIds = userMap.get(userId);
+            if (sessionIds != null) {
+                for (String sessionId : new HashSet<>(sessionIds)) {
+                    SessionContext ctx = sessionContexts.get(sessionId);
+                    if (ctx != null) {
+                        try {
+                            WsEventEnvelope<WsErrorPayload> errorEnv = WsEventEnvelope.<WsErrorPayload>builder()
+                                    .event("error")
+                                    .loungeId(loungeId)
+                                    .payload(WsErrorPayload.builder()
+                                            .code("REMOVED_BY_MODERATOR")
+                                            .message(reason != null ? reason : "You have been removed from the lounge")
+                                            .build())
+                                    .ts(Instant.now())
+                                    .build();
+                            ctx.send(objectMapper.writeValueAsString(errorEnv));
+                            ctx.getSession().close(new CloseStatus(4003, "Removed by moderator")).subscribe();
+                        } catch (Exception e) {
+                            log.debug("Error disconnecting kicked user session {}: {}", sessionId, e.getMessage());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    public void updateUserRole(Long loungeId, Long userId, String newRole) {
+        Map<Long, Set<String>> userMap = loungeUserSessions.get(loungeId);
+        if (userMap != null) {
+            Set<String> sessionIds = userMap.get(userId);
+            if (sessionIds != null) {
+                for (String sessionId : sessionIds) {
+                    SessionContext oldCtx = sessionContexts.get(sessionId);
+                    if (oldCtx != null) {
+                        sessionContexts.put(sessionId, new SessionContext(
+                                oldCtx.getLoungeId(),
+                                oldCtx.getUserId(),
+                                newRole,
+                                oldCtx.getSession(),
+                                oldCtx.getSink()
+                        ));
+                    }
+                }
             }
         }
     }
