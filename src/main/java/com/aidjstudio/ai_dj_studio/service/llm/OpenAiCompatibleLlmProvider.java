@@ -1,6 +1,7 @@
 package com.aidjstudio.ai_dj_studio.service.llm;
 
 import com.aidjstudio.ai_dj_studio.dto.track.RetrievedMetadataEntry;
+import com.aidjstudio.ai_dj_studio.entity.Track;
 import com.aidjstudio.ai_dj_studio.exception.LlmProviderException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -68,13 +69,54 @@ public class OpenAiCompatibleLlmProvider implements LlmProvider {
                 "If the provided facts do not contain enough evidence to answer, state: 'Information not present in available metadata for this track.' " +
                 "Do not guess, speculate, or introduce external facts. Always include the source ID citation (e.g. [track:1:timeline:101]) of the facts used.";
 
-        String formattedEvidence = evidence.stream()
+        String formattedEvidence = (evidence == null || evidence.isEmpty())
+                ? "(No metadata facts available)"
+                : evidence.stream()
                 .map(e -> String.format("- [%s] (%s at %ds): %s", e.getSourceId(), e.getEventType(), e.getTsSeconds(), e.getText()))
                 .collect(Collectors.joining("\n"));
 
         String userPrompt = String.format("Track: \"%s\" by %s\n\nAuthored Metadata Facts:\n%s\n\nUser Question: %s",
                 trackTitle, trackArtist, formattedEvidence, question);
 
+        return executeChatCompletion(systemPrompt, userPrompt);
+    }
+
+    @Override
+    public Mono<String> generateTransitionScript(
+            Track currentTrack,
+            Track nextTrack,
+            String matchExplanation,
+            List<RetrievedMetadataEntry> evidence
+    ) {
+        if (apiKey.isBlank()) {
+            return Mono.error(new LlmProviderException("LLM API key is not configured. Set LLM_API_KEY environment variable or switch to fake provider."));
+        }
+
+        String systemPrompt = "You are an expert AI Radio DJ host for AI DJ Studio. Your task is to announce the smooth mix/segue from the current playing track into the incoming track. " +
+                "You must base your commentary strictly and ONLY on the provided musical match facts (BPM, Camelot keys) and the authored timeline facts. " +
+                "Do NOT invent lore, external trivia, or false statements. If metadata facts are provided, cite the source ID (e.g. [track:1:timeline:101]). " +
+                "Keep the banter energetic, crisp, and radio-ready (1-3 sentences).";
+
+        String currTitle = currentTrack != null ? currentTrack.getTitle() : "Current Track";
+        String currArtist = currentTrack != null ? currentTrack.getArtist() : "Unknown Artist";
+        String nextTitle = nextTrack != null ? nextTrack.getTitle() : "Next Track";
+        String nextArtist = nextTrack != null ? nextTrack.getArtist() : "Unknown Artist";
+
+        String formattedEvidence = (evidence == null || evidence.isEmpty())
+                ? "(No authored timeline facts available for these tracks)"
+                : evidence.stream()
+                .map(e -> String.format("- [%s] (%s at %ds): %s", e.getSourceId(), e.getEventType(), e.getTsSeconds(), e.getText()))
+                .collect(Collectors.joining("\n"));
+
+        String userPrompt = String.format(
+                "Current Playing Track: \"%s\" by %s\nIncoming Selected Track: \"%s\" by %s\nMusical Match & Energy Reason: %s\n\nAuthored Metadata Evidence:\n%s\n\nAnnounce this transition:",
+                currTitle, currArtist, nextTitle, nextArtist, matchExplanation, formattedEvidence
+        );
+
+        return executeChatCompletion(systemPrompt, userPrompt);
+    }
+
+    private Mono<String> executeChatCompletion(String systemPrompt, String userPrompt) {
         Map<String, Object> requestPayload = new HashMap<>();
         requestPayload.put("model", model);
         requestPayload.put("temperature", 0.1);

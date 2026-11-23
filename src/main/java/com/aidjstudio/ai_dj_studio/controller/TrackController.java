@@ -5,9 +5,12 @@ import com.aidjstudio.ai_dj_studio.dto.track.TrackAcousticProfileResponse;
 import com.aidjstudio.ai_dj_studio.dto.track.TrackQnaRequest;
 import com.aidjstudio.ai_dj_studio.dto.track.TrackQnaResponse;
 import com.aidjstudio.ai_dj_studio.dto.track.TrackResponse;
+import com.aidjstudio.ai_dj_studio.dto.transition.TransitionDecisionRequest;
+import com.aidjstudio.ai_dj_studio.dto.transition.TransitionDecisionResponse;
 import com.aidjstudio.ai_dj_studio.service.TrackMetadataRetrievalService;
 import com.aidjstudio.ai_dj_studio.service.TrackQnaService;
 import com.aidjstudio.ai_dj_studio.service.TrackService;
+import com.aidjstudio.ai_dj_studio.service.TransitionDecisionService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -29,6 +32,7 @@ public class TrackController {
     private final TrackService trackService;
     private final TrackMetadataRetrievalService metadataRetrievalService;
     private final TrackQnaService trackQnaService;
+    private final TransitionDecisionService transitionDecisionService;
 
     @GetMapping
     public Flux<TrackResponse> getAllTracks() {
@@ -61,6 +65,14 @@ public class TrackController {
             @PathVariable Long id,
             @Valid @RequestBody TrackQnaRequest request) {
         return trackQnaService.answerTrackQuestion(id, request)
+                .map(ResponseEntity::ok);
+    }
+
+    @PostMapping("/{id}/transition-decision")
+    public Mono<ResponseEntity<TransitionDecisionResponse>> decideTransition(
+            @PathVariable Long id,
+            @Valid @RequestBody TransitionDecisionRequest request) {
+        return transitionDecisionService.evaluateTransition(id, request)
                 .map(ResponseEntity::ok);
     }
 }
