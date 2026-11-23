@@ -4,7 +4,11 @@ import com.aidjstudio.ai_dj_studio.entity.TrackTimelineEvent;
 import org.springframework.data.repository.reactive.ReactiveCrudRepository;
 import reactor.core.publisher.Flux;
 
+import java.util.Collection;
+
 public interface TrackTimelineEventRepository extends ReactiveCrudRepository<TrackTimelineEvent, Long> {
 
     Flux<TrackTimelineEvent> findByTrackIdOrderByTsSecondsAsc(Long trackId);
+
+    Flux<TrackTimelineEvent> findByTrackIdInOrderByTsSecondsAsc(Collection<Long> trackIds);
 }

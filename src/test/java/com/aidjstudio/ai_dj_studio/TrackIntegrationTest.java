@@ -259,4 +259,115 @@ class TrackIntegrationTest {
                 .jsonPath("$.status").isEqualTo(404)
                 .jsonPath("$.message").isEqualTo("Track acoustic profile not found or incomplete for id: " + savedInvalidTrack.getId());
     }
+
+    @Test
+    void searchTimelineMetadata_unauthenticated_shouldReturnUnauthorized() {
+        webTestClient.get()
+                .uri("/api/v1/tracks/" + testTrack.getId() + "/timeline/search?query=soul")
+                .exchange()
+                .expectStatus().isUnauthorized();
+    }
+
+    @Test
+    void searchTimelineMetadata_authenticated_withQuery_shouldReturnMatchingEntriesAndStableSourceIds() {
+        String token = generateValidToken();
+
+        TrackTimelineEvent event = TrackTimelineEvent.builder()
+                .trackId(testTrack.getId())
+                .tsSeconds(15)
+                .eventType("sample_credit")
+                .payload(Json.of("{\"text\":\"Sampled from a 1974 soul record.\"}"))
+                .build();
+        TrackTimelineEvent savedEvent = timelineEventRepository.save(event).block();
+        assertNotNull(savedEvent);
+
+        webTestClient.get()
+                .uri("/api/v1/tracks/" + testTrack.getId() + "/timeline/search?query=soul")
+                .headers(headers -> headers.setBearerAuth(token))
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$").isArray()
+                .jsonPath("$.length()").isEqualTo(1)
+                .jsonPath("$[0].id").isEqualTo(savedEvent.getId())
+                .jsonPath("$[0].trackId").isEqualTo(testTrack.getId())
+                .jsonPath("$[0].sourceId").isEqualTo("track:" + testTrack.getId() + ":timeline:" + savedEvent.getId())
+                .jsonPath("$[0].eventType").isEqualTo("sample_credit")
+                .jsonPath("$[0].tsSeconds").isEqualTo(15)
+                .jsonPath("$[0].text").isEqualTo("Sampled from a 1974 soul record.")
+                .jsonPath("$[0].score").isNumber();
+    }
+
+    @Test
+    void searchTimelineMetadata_authenticated_whenNoMatches_shouldReturnEmptyList() {
+        String token = generateValidToken();
+
+        TrackTimelineEvent event = TrackTimelineEvent.builder()
+                .trackId(testTrack.getId())
+                .tsSeconds(15)
+                .eventType("sample_credit")
+                .payload(Json.of("{\"text\":\"Sampled from a 1974 soul record.\"}"))
+                .build();
+        timelineEventRepository.save(event).block();
+
+        webTestClient.get()
+                .uri("/api/v1/tracks/" + testTrack.getId() + "/timeline/search?query=harp")
+                .headers(headers -> headers.setBearerAuth(token))
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$").isArray()
+                .jsonPath("$.length()").isEqualTo(0);
+    }
+
+    @Test
+    void searchTimelineMetadata_authenticated_trackIsolation_shouldNeverReturnOtherTrackEvents() {
+        String token = generateValidToken();
+
+        // Event for testTrack
+        TrackTimelineEvent event1 = TrackTimelineEvent.builder()
+                .trackId(testTrack.getId())
+                .tsSeconds(20)
+                .eventType("trivia")
+                .payload(Json.of("{\"text\":\"Recorded in London studio.\"}"))
+                .build();
+        timelineEventRepository.save(event1).block();
+
+        // Create second track
+        Track otherTrack = new Track(
+                null,
+                "Other Isolated Track",
+                "Other Artist",
+                210,
+                "https://cdn.aidj.com/audio/other.mp3",
+                new BigDecimal("130.00"),
+                "8A",
+                new BigDecimal("0.700"),
+                new BigDecimal("0.600")
+        );
+        Track savedOtherTrack = trackRepository.save(otherTrack).block();
+        assertNotNull(savedOtherTrack);
+        createdTrackIds.add(savedOtherTrack.getId());
+
+        // Event for second track with matching word "London"
+        TrackTimelineEvent event2 = TrackTimelineEvent.builder()
+                .trackId(savedOtherTrack.getId())
+                .tsSeconds(40)
+                .eventType("trivia")
+                .payload(Json.of("{\"text\":\"London orchestra collaboration.\"}"))
+                .build();
+        timelineEventRepository.save(event2).block();
+
+        // Search testTrack for "London" - must ONLY return event1, never event2
+        webTestClient.get()
+                .uri("/api/v1/tracks/" + testTrack.getId() + "/timeline/search?query=London")
+                .headers(headers -> headers.setBearerAuth(token))
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$").isArray()
+                .jsonPath("$.length()").isEqualTo(1)
+                .jsonPath("$[0].trackId").isEqualTo(testTrack.getId())
+                .jsonPath("$[0].text").isEqualTo("Recorded in London studio.");
+    }
 }
