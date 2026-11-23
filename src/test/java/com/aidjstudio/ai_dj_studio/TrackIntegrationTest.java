@@ -1,5 +1,7 @@
 package com.aidjstudio.ai_dj_studio;
 
+import com.aidjstudio.ai_dj_studio.dto.track.TrackQnaRequest;
+import com.aidjstudio.ai_dj_studio.dto.track.TrackQnaResponse;
 import com.aidjstudio.ai_dj_studio.entity.Track;
 import com.aidjstudio.ai_dj_studio.entity.TrackTimelineEvent;
 import com.aidjstudio.ai_dj_studio.repository.TrackRepository;
@@ -23,7 +25,9 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @AutoConfigureWebTestClient
@@ -369,5 +373,76 @@ class TrackIntegrationTest {
                 .jsonPath("$.length()").isEqualTo(1)
                 .jsonPath("$[0].trackId").isEqualTo(testTrack.getId())
                 .jsonPath("$[0].text").isEqualTo("Recorded in London studio.");
+    }
+
+    @Test
+    void askTrackQuestion_unauthenticated_shouldReturnUnauthorized() {
+        webTestClient.post()
+                .uri("/api/v1/tracks/" + testTrack.getId() + "/qna")
+                .bodyValue(new TrackQnaRequest("What sample was used?"))
+                .exchange()
+                .expectStatus().isUnauthorized();
+    }
+
+    @Test
+    void askTrackQuestion_authenticated_grounded_shouldReturnAnswerAndSources() {
+        String token = generateValidToken();
+
+        TrackTimelineEvent event = TrackTimelineEvent.builder()
+                .trackId(testTrack.getId())
+                .tsSeconds(15)
+                .eventType("sample_credit")
+                .payload(Json.of("{\"text\":\"Sampled from a 1974 soul record.\"}"))
+                .build();
+        TrackTimelineEvent savedEvent = timelineEventRepository.save(event).block();
+        assertNotNull(savedEvent);
+
+        webTestClient.post()
+                .uri("/api/v1/tracks/" + testTrack.getId() + "/qna")
+                .headers(headers -> headers.setBearerAuth(token))
+                .bodyValue(new TrackQnaRequest("What soul sample is used?"))
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody(TrackQnaResponse.class)
+                .value(response -> {
+                    assertTrue(response.isGrounded());
+                    assertEquals(1, response.getSourceIds().size());
+                    assertEquals("track:" + testTrack.getId() + ":timeline:" + savedEvent.getId(), response.getSourceIds().get(0));
+                    assertEquals(1, response.getSources().size());
+                    assertEquals("Sampled from a 1974 soul record.", response.getSources().get(0).getText());
+                    assertTrue(response.getAnswer().contains("1974 soul record"));
+                });
+    }
+
+    @Test
+    void askTrackQuestion_authenticated_noEvidence_shouldReturnCannotAnswer() {
+        String token = generateValidToken();
+
+        webTestClient.post()
+                .uri("/api/v1/tracks/" + testTrack.getId() + "/qna")
+                .headers(headers -> headers.setBearerAuth(token))
+                .bodyValue(new TrackQnaRequest("Who is playing the saxophone?"))
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.grounded").isEqualTo(false)
+                .jsonPath("$.answer").isEqualTo("Information not present in available metadata for this track.")
+                .jsonPath("$.sourceIds.length()").isEqualTo(0)
+                .jsonPath("$.sources.length()").isEqualTo(0);
+    }
+
+    @Test
+    void askTrackQuestion_authenticated_blankQuestion_shouldReturnBadRequest() {
+        String token = generateValidToken();
+
+        webTestClient.post()
+                .uri("/api/v1/tracks/" + testTrack.getId() + "/qna")
+                .headers(headers -> headers.setBearerAuth(token))
+                .bodyValue(new TrackQnaRequest("   "))
+                .exchange()
+                .expectStatus().isBadRequest()
+                .expectBody()
+                .jsonPath("$.status").isEqualTo(400)
+                .jsonPath("$.message").isNotEmpty();
     }
 }

@@ -1,4 +1,3 @@
-
 package com.aidjstudio.ai_dj_studio.exception;
 
 import com.aidjstudio.ai_dj_studio.dto.ApiErrorResponse;
@@ -9,8 +8,6 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.bind.support.WebExchangeBindException;
 import org.springframework.web.server.ServerWebInputException;
-
-
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -68,6 +65,7 @@ public class GlobalExceptionHandler {
                         exception.getMessage()
                 ));
     }
+
     @ExceptionHandler(AccessDeniedException.class)
     public ResponseEntity<ApiErrorResponse> handleAccessDenied(
             org.springframework.security.access.AccessDeniedException exception
@@ -100,6 +98,18 @@ public class GlobalExceptionHandler {
                 .status(HttpStatus.CONFLICT)
                 .body(new ApiErrorResponse(
                         HttpStatus.CONFLICT.value(),
+                        exception.getMessage()
+                ));
+    }
+
+    @ExceptionHandler(LlmProviderException.class)
+    public ResponseEntity<ApiErrorResponse> handleLlmProviderException(
+            LlmProviderException exception
+    ) {
+        return ResponseEntity
+                .status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(new ApiErrorResponse(
+                        HttpStatus.SERVICE_UNAVAILABLE.value(),
                         exception.getMessage()
                 ));
     }
