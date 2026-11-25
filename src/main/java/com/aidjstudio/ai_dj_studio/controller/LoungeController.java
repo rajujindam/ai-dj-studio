@@ -1,5 +1,9 @@
 package com.aidjstudio.ai_dj_studio.controller;
 
+import com.aidjstudio.ai_dj_studio.dto.announcement.PublishSoundclashAnnouncementRequest;
+import com.aidjstudio.ai_dj_studio.dto.announcement.PublishTransitionAnnouncementRequest;
+import com.aidjstudio.ai_dj_studio.dto.announcement.SoundclashAnnouncementPayload;
+import com.aidjstudio.ai_dj_studio.dto.announcement.TransitionAnnouncementPayload;
 import com.aidjstudio.ai_dj_studio.dto.chat.ChatMessageResponse;
 import com.aidjstudio.ai_dj_studio.dto.chat.SendChatMessageRequest;
 import com.aidjstudio.ai_dj_studio.dto.lounge.CreateLoungeRequest;
@@ -17,6 +21,7 @@ import com.aidjstudio.ai_dj_studio.dto.soundclash.SoundclashBattleResponse;
 import com.aidjstudio.ai_dj_studio.dto.soundclash.VoteSoundclashRequest;
 import com.aidjstudio.ai_dj_studio.entity.DjLounge;
 import com.aidjstudio.ai_dj_studio.entity.LoungeParticipant;
+import com.aidjstudio.ai_dj_studio.service.AnnouncementService;
 import com.aidjstudio.ai_dj_studio.service.ChatService;
 import com.aidjstudio.ai_dj_studio.service.LoungeLifecycleService;
 import com.aidjstudio.ai_dj_studio.service.LoungeMembershipService;
@@ -46,6 +51,7 @@ public class LoungeController {
     private final ChatService chatService;
     private final SoundclashService soundclashService;
     private final LoungeModerationService loungeModerationService;
+    private final AnnouncementService announcementService;
 
     @PostMapping
     public Mono<ResponseEntity<CreateLoungeResponse>> createLounge(
@@ -364,6 +370,33 @@ public class LoungeController {
 
         return loungeModerationService
                 .transferHost(loungeId, request.getNewHostUserId(), authenticatedUserId)
+                .map(ResponseEntity::ok);
+    }
+
+    @PostMapping("/{loungeId}/announcements/transition")
+    public Mono<ResponseEntity<TransitionAnnouncementPayload>> publishTransitionAnnouncement(
+            @PathVariable Long loungeId,
+            @RequestBody(required = false) PublishTransitionAnnouncementRequest request,
+            @AuthenticationPrincipal Jwt jwt
+    ) {
+        Long authenticatedUserId = Long.valueOf(jwt.getSubject());
+
+        return announcementService
+                .publishTransitionAnnouncement(loungeId, request, authenticatedUserId)
+                .map(ResponseEntity::ok);
+    }
+
+    @PostMapping("/{loungeId}/announcements/soundclash")
+    public Mono<ResponseEntity<SoundclashAnnouncementPayload>> publishSoundclashAnnouncement(
+            @PathVariable Long loungeId,
+            @RequestBody(required = false) PublishSoundclashAnnouncementRequest request,
+            @AuthenticationPrincipal Jwt jwt
+    ) {
+        Long authenticatedUserId = Long.valueOf(jwt.getSubject());
+        Long battleId = request != null ? request.getBattleId() : null;
+
+        return announcementService
+                .publishSoundclashAnnouncement(loungeId, battleId, authenticatedUserId)
                 .map(ResponseEntity::ok);
     }
 }

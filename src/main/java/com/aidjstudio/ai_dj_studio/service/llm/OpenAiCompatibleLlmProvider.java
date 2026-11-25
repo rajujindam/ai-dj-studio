@@ -116,6 +116,39 @@ public class OpenAiCompatibleLlmProvider implements LlmProvider {
         return executeChatCompletion(systemPrompt, userPrompt);
     }
 
+    @Override
+    public Mono<String> generateSoundclashScript(
+            Track winningTrack,
+            int voteCount,
+            int totalVotes,
+            List<RetrievedMetadataEntry> evidence
+    ) {
+        if (apiKey.isBlank()) {
+            return Mono.error(new LlmProviderException("LLM API key is not configured. Set LLM_API_KEY environment variable or switch to fake provider."));
+        }
+
+        String systemPrompt = "You are an energetic AI Radio DJ host for AI DJ Studio announcing the winner of a live crowd Soundclash battle. " +
+                "You must base your commentary strictly and ONLY on the winning track details, vote count, and provided authored timeline facts. " +
+                "Do NOT invent lore, external trivia, or false statements. If metadata facts are provided, cite the source ID (e.g. [track:1:timeline:101]). " +
+                "Keep the victory banter energetic, celebratory, and concise (1-2 sentences).";
+
+        String title = winningTrack != null ? winningTrack.getTitle() : "Winning Track";
+        String artist = winningTrack != null ? winningTrack.getArtist() : "Unknown Artist";
+
+        String formattedEvidence = (evidence == null || evidence.isEmpty())
+                ? "(No authored timeline facts available for this track)"
+                : evidence.stream()
+                .map(e -> String.format("- [%s] (%s at %ds): %s", e.getSourceId(), e.getEventType(), e.getTsSeconds(), e.getText()))
+                .collect(Collectors.joining("\n"));
+
+        String userPrompt = String.format(
+                "Soundclash Winning Track: \"%s\" by %s\nWinning Votes: %d out of %d total votes\n\nAuthored Metadata Evidence:\n%s\n\nAnnounce the Soundclash battle winner:",
+                title, artist, voteCount, totalVotes, formattedEvidence
+        );
+
+        return executeChatCompletion(systemPrompt, userPrompt);
+    }
+
     private Mono<String> executeChatCompletion(String systemPrompt, String userPrompt) {
         Map<String, Object> requestPayload = new HashMap<>();
         requestPayload.put("model", model);

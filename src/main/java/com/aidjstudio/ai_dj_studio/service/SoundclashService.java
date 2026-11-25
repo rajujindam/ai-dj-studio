@@ -21,8 +21,8 @@ import com.aidjstudio.ai_dj_studio.repository.SoundclashCandidateRepository;
 import com.aidjstudio.ai_dj_studio.repository.SoundclashVoteRepository;
 import com.aidjstudio.ai_dj_studio.repository.TrackRepository;
 import com.aidjstudio.ai_dj_studio.websocket.LoungeSessionManager;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
@@ -38,7 +38,6 @@ import java.util.Set;
 
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class SoundclashService {
 
     public static final int MIN_CANDIDATES = 2;
@@ -57,6 +56,61 @@ public class SoundclashService {
     private final QueueService queueService;
     private final LoungeQueueMutationSerializer mutationSerializer;
     private final LoungeSessionManager loungeSessionManager;
+    private final AnnouncementService announcementService;
+
+    @Autowired
+    public SoundclashService(
+            DjLoungeRepository djLoungeRepository,
+            LoungeParticipantRepository loungeParticipantRepository,
+            TrackRepository trackRepository,
+            SoundclashBattleRepository soundclashBattleRepository,
+            SoundclashCandidateRepository soundclashCandidateRepository,
+            SoundclashVoteRepository soundclashVoteRepository,
+            QueueEntryRepository queueEntryRepository,
+            QueueService queueService,
+            LoungeQueueMutationSerializer mutationSerializer,
+            LoungeSessionManager loungeSessionManager,
+            @Autowired(required = false) AnnouncementService announcementService
+    ) {
+        this.djLoungeRepository = djLoungeRepository;
+        this.loungeParticipantRepository = loungeParticipantRepository;
+        this.trackRepository = trackRepository;
+        this.soundclashBattleRepository = soundclashBattleRepository;
+        this.soundclashCandidateRepository = soundclashCandidateRepository;
+        this.soundclashVoteRepository = soundclashVoteRepository;
+        this.queueEntryRepository = queueEntryRepository;
+        this.queueService = queueService;
+        this.mutationSerializer = mutationSerializer;
+        this.loungeSessionManager = loungeSessionManager;
+        this.announcementService = announcementService;
+    }
+
+    public SoundclashService(
+            DjLoungeRepository djLoungeRepository,
+            LoungeParticipantRepository loungeParticipantRepository,
+            TrackRepository trackRepository,
+            SoundclashBattleRepository soundclashBattleRepository,
+            SoundclashCandidateRepository soundclashCandidateRepository,
+            SoundclashVoteRepository soundclashVoteRepository,
+            QueueEntryRepository queueEntryRepository,
+            QueueService queueService,
+            LoungeQueueMutationSerializer mutationSerializer,
+            LoungeSessionManager loungeSessionManager
+    ) {
+        this(
+                djLoungeRepository,
+                loungeParticipantRepository,
+                trackRepository,
+                soundclashBattleRepository,
+                soundclashCandidateRepository,
+                soundclashVoteRepository,
+                queueEntryRepository,
+                queueService,
+                mutationSerializer,
+                loungeSessionManager,
+                null
+        );
+    }
 
     /**
      * Opens a new timed Soundclash battle with 2-4 candidate tracks.
@@ -274,7 +328,17 @@ public class SoundclashService {
                                     .flatMap(responseDto -> {
                                         broadcastSoundclashResolved(loungeId, responseDto);
                                         return queueService.broadcastQueueUpdate(loungeId, "soundclash")
-                                                .thenReturn(responseDto);
+                                                .then(Mono.defer(() -> {
+                                                    if (announcementService != null) {
+                                                        return announcementService.publishSoundclashAnnouncement(loungeId, savedBattle.getId())
+                                                                .onErrorResume(ex -> {
+                                                                    log.warn("Failed to broadcast soundclash victory announcement: {}", ex.getMessage());
+                                                                    return Mono.empty();
+                                                                })
+                                                                .thenReturn(responseDto);
+                                                    }
+                                                    return Mono.just(responseDto);
+                                                }));
                                     })
                             );
                 });
@@ -448,13 +512,13 @@ public class SoundclashService {
                 )
                 .collectList()
                 .map(candidateDtos -> SoundclashBattleResponse.builder()
-                        .id(battle.getId())
-                        .loungeId(battle.getLoungeId())
-                        .openedAt(battle.getOpenedAt())
-                        .closesAt(battle.getClosesAt())
-                        .status(battle.getStatus())
-                        .winningTrackId(battle.getWinningTrackId())
-                        .candidates(candidateDtos)
-                        .build());
+                                .id(battle.getId())
+                                .loungeId(battle.getLoungeId())
+                                .openedAt(battle.getOpenedAt())
+                                .closesAt(battle.getClosesAt())
+                                .status(battle.getStatus())
+                                .winningTrackId(battle.getWinningTrackId())
+                                .candidates(candidateDtos)
+                                .build());
     }
 }

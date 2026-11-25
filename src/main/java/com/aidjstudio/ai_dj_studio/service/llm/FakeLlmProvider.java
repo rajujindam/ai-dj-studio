@@ -83,4 +83,39 @@ public class FakeLlmProvider implements LlmProvider {
                 currTitle, currArtist, nextTitle, nextArtist, matchExplanation, citations
         ));
     }
+
+    @Override
+    public Mono<String> generateSoundclashScript(
+            Track winningTrack,
+            int voteCount,
+            int totalVotes,
+            List<RetrievedMetadataEntry> evidence
+    ) {
+        if (simulateFailure) {
+            return Mono.error(new LlmProviderException("Simulated upstream LLM provider failure"));
+        }
+
+        if (customResponse != null) {
+            return Mono.just(customResponse);
+        }
+
+        String title = winningTrack != null ? winningTrack.getTitle() : "Winning Track";
+        String artist = winningTrack != null ? winningTrack.getArtist() : "Unknown Artist";
+
+        if (evidence == null || evidence.isEmpty()) {
+            return Mono.just(String.format(
+                    "Soundclash winner decided! \"%s\" by %s won the clash with %d of %d votes!",
+                    title, artist, voteCount, totalVotes
+            ));
+        }
+
+        String citations = evidence.stream()
+                .map(e -> String.format("[%s]: %s", e.getSourceId(), e.getText()))
+                .collect(Collectors.joining(" "));
+
+        return Mono.just(String.format(
+                "Soundclash winner decided! \"%s\" by %s won the clash with %d of %d votes! %s",
+                title, artist, voteCount, totalVotes, citations
+        ));
+    }
 }

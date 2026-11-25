@@ -40,4 +40,21 @@ public interface LlmProvider {
             String matchExplanation,
             List<RetrievedMetadataEntry> evidence
     );
+
+    /**
+     * Generates a grounded Soundclash battle winner announcement banter,
+     * strictly grounded in the winning track details, vote tally, and authored metadata.
+     *
+     * @param winningTrack the winning track
+     * @param voteCount    votes received by the winning track
+     * @param totalVotes   total votes cast in the battle
+     * @param evidence     authored metadata timeline events for the winning track
+     * @return Mono emitting the grounded victory announcement script
+     */
+    Mono<String> generateSoundclashScript(
+            Track winningTrack,
+            int voteCount,
+            int totalVotes,
+            List<RetrievedMetadataEntry> evidence
+    );
 }

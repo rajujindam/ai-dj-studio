@@ -1,5 +1,6 @@
 package com.aidjstudio.ai_dj_studio.websocket;
 
+import com.aidjstudio.ai_dj_studio.dto.announcement.PublishTransitionAnnouncementRequest;
 import com.aidjstudio.ai_dj_studio.dto.chat.SendChatMessageRequest;
 import com.aidjstudio.ai_dj_studio.dto.soundclash.OpenSoundclashBattleRequest;
 import com.aidjstudio.ai_dj_studio.dto.websocket.LoungeSnapshotPayload;
@@ -14,6 +15,7 @@ import com.aidjstudio.ai_dj_studio.entity.LoungeStatus;
 import com.aidjstudio.ai_dj_studio.repository.DjLoungeRepository;
 import com.aidjstudio.ai_dj_studio.repository.LoungeParticipantRepository;
 import com.aidjstudio.ai_dj_studio.repository.QueueEntryRepository;
+import com.aidjstudio.ai_dj_studio.service.AnnouncementService;
 import com.aidjstudio.ai_dj_studio.service.ChatService;
 import com.aidjstudio.ai_dj_studio.service.LoungeInteractionService;
 import com.aidjstudio.ai_dj_studio.service.QueueService;
@@ -58,6 +60,7 @@ public class LoungeWebSocketHandler implements WebSocketHandler {
     private final ChatService chatService;
     private final LoungeInteractionService loungeInteractionService;
     private final SoundclashService soundclashService;
+    private final AnnouncementService announcementService;
     private final LoungeSessionManager loungeSessionManager;
     private final ObjectMapper objectMapper;
 
@@ -71,6 +74,7 @@ public class LoungeWebSocketHandler implements WebSocketHandler {
             ChatService chatService,
             LoungeInteractionService loungeInteractionService,
             SoundclashService soundclashService,
+            @Autowired(required = false) AnnouncementService announcementService,
             LoungeSessionManager loungeSessionManager,
             ObjectMapper objectMapper
     ) {
@@ -82,8 +86,36 @@ public class LoungeWebSocketHandler implements WebSocketHandler {
         this.chatService = chatService;
         this.loungeInteractionService = loungeInteractionService;
         this.soundclashService = soundclashService;
+        this.announcementService = announcementService;
         this.loungeSessionManager = loungeSessionManager;
         this.objectMapper = objectMapper;
+    }
+
+    public LoungeWebSocketHandler(
+            ReactiveJwtDecoder reactiveJwtDecoder,
+            DjLoungeRepository djLoungeRepository,
+            LoungeParticipantRepository loungeParticipantRepository,
+            QueueEntryRepository queueEntryRepository,
+            QueueService queueService,
+            ChatService chatService,
+            LoungeInteractionService loungeInteractionService,
+            SoundclashService soundclashService,
+            LoungeSessionManager loungeSessionManager,
+            ObjectMapper objectMapper
+    ) {
+        this(
+                reactiveJwtDecoder,
+                djLoungeRepository,
+                loungeParticipantRepository,
+                queueEntryRepository,
+                queueService,
+                chatService,
+                loungeInteractionService,
+                soundclashService,
+                null,
+                loungeSessionManager,
+                objectMapper
+        );
     }
 
     public LoungeWebSocketHandler(
@@ -101,6 +133,7 @@ public class LoungeWebSocketHandler implements WebSocketHandler {
                 loungeParticipantRepository,
                 queueEntryRepository,
                 queueService,
+                null,
                 null,
                 null,
                 null,
@@ -490,6 +523,55 @@ public class LoungeWebSocketHandler implements WebSocketHandler {
                 return soundclashService.resolveBattle(loungeId, userId)
                         .onErrorResume(ex -> {
                             sendErrorMessage(session, loungeId, "SOUNDCLASH_RESOLVE_FAILED", ex.getMessage());
+                            return Mono.empty();
+                        })
+                        .then();
+            }
+
+            if ("announcement.transition".equalsIgnoreCase(event) || "transition.announce".equalsIgnoreCase(event)) {
+                if (announcementService == null) {
+                    sendErrorMessage(session, loungeId, "ANNOUNCEMENT_UNAVAILABLE", "Announcement service is not configured");
+                    return Mono.empty();
+                }
+
+                PublishTransitionAnnouncementRequest req = null;
+                Object payloadObj = map.get("payload");
+                if (payloadObj != null) {
+                    try {
+                        req = objectMapper.convertValue(payloadObj, PublishTransitionAnnouncementRequest.class);
+                    } catch (Exception e) {
+                        log.debug("Failed to deserialize transition announcement request payload: {}", e.getMessage());
+                    }
+                }
+
+                return announcementService.publishTransitionAnnouncement(loungeId, req, userId)
+                        .onErrorResume(ex -> {
+                            sendErrorMessage(session, loungeId, "ANNOUNCEMENT_FAILED", ex.getMessage());
+                            return Mono.empty();
+                        })
+                        .then();
+            }
+
+            if ("announcement.soundclash".equalsIgnoreCase(event) || "soundclash.announce".equalsIgnoreCase(event)) {
+                if (announcementService == null) {
+                    sendErrorMessage(session, loungeId, "ANNOUNCEMENT_UNAVAILABLE", "Announcement service is not configured");
+                    return Mono.empty();
+                }
+
+                Long battleId = null;
+                Object payloadObj = map.get("payload");
+                if (payloadObj instanceof Map<?, ?> payloadMap) {
+                    Object bId = payloadMap.get("battleId");
+                    if (bId instanceof Number num) {
+                        battleId = num.longValue();
+                    }
+                } else if (payloadObj instanceof Number num) {
+                    battleId = num.longValue();
+                }
+
+                return announcementService.publishSoundclashAnnouncement(loungeId, battleId, userId)
+                        .onErrorResume(ex -> {
+                            sendErrorMessage(session, loungeId, "ANNOUNCEMENT_FAILED", ex.getMessage());
                             return Mono.empty();
                         })
                         .then();
