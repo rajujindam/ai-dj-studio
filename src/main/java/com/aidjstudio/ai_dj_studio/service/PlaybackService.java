@@ -7,13 +7,14 @@ import com.aidjstudio.ai_dj_studio.entity.QueueEntry;
 import com.aidjstudio.ai_dj_studio.repository.DjLoungeRepository;
 import com.aidjstudio.ai_dj_studio.repository.QueueEntryRepository;
 import com.aidjstudio.ai_dj_studio.websocket.LoungeSessionManager;
-import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 
+@Slf4j
 @Service
-@RequiredArgsConstructor
 public class PlaybackService {
 
     private final DjLoungeRepository djLoungeRepository;
@@ -21,6 +22,34 @@ public class PlaybackService {
     private final QueueService queueService;
     private final LoungeSessionManager loungeSessionManager;
     private final LoungeQueueMutationSerializer mutationSerializer;
+    private final InteractionService interactionService;
+
+    @Autowired
+    public PlaybackService(
+            DjLoungeRepository djLoungeRepository,
+            QueueEntryRepository queueEntryRepository,
+            QueueService queueService,
+            LoungeSessionManager loungeSessionManager,
+            LoungeQueueMutationSerializer mutationSerializer,
+            @Autowired(required = false) InteractionService interactionService
+    ) {
+        this.djLoungeRepository = djLoungeRepository;
+        this.queueEntryRepository = queueEntryRepository;
+        this.queueService = queueService;
+        this.loungeSessionManager = loungeSessionManager;
+        this.mutationSerializer = mutationSerializer;
+        this.interactionService = interactionService;
+    }
+
+    public PlaybackService(
+            DjLoungeRepository djLoungeRepository,
+            QueueEntryRepository queueEntryRepository,
+            QueueService queueService,
+            LoungeSessionManager loungeSessionManager,
+            LoungeQueueMutationSerializer mutationSerializer
+    ) {
+        this(djLoungeRepository, queueEntryRepository, queueService, loungeSessionManager, mutationSerializer, null);
+    }
 
     public Mono<LoungePlaybackStateResponse> getPlaybackState(Long loungeId) {
         return findLounge(loungeId)
@@ -68,6 +97,7 @@ public class PlaybackService {
                                     return Mono.error(new IllegalStateException("Queue is empty"));
                                 }
 
+                                Long previousTrackId = lounge.getCurrentTrackId();
                                 QueueEntry nextEntry = entries.remove(0);
                                 lounge.setCurrentTrackId(nextEntry.getTrackId());
 
@@ -78,7 +108,18 @@ public class PlaybackService {
                                 return queueEntryRepository.saveAll(entries)
                                         .then(queueEntryRepository.delete(nextEntry))
                                         .then(djLoungeRepository.save(lounge))
-                                        .flatMap(savedLounge -> getPlaybackState(loungeId));
+                                        .then(Mono.defer(() -> {
+                                            if (interactionService != null && previousTrackId != null) {
+                                                return interactionService.recordCoListening(loungeId, previousTrackId, null, true)
+                                                        .collectList()
+                                                        .onErrorResume(ex -> {
+                                                            log.warn("Failed to capture co-listening on track advance: {}", ex.getMessage());
+                                                            return Mono.empty();
+                                                        })
+                                                        .then(getPlaybackState(loungeId));
+                                            }
+                                            return getPlaybackState(loungeId);
+                                        }));
                             });
                 });
     }
@@ -120,14 +161,26 @@ public class PlaybackService {
                     return queueEntryRepository.findByIdAndLoungeId(queueEntryId, loungeId)
                             .switchIfEmpty(Mono.error(new IllegalArgumentException(
                                     "Queue entry not found with id: " + queueEntryId
-                            )))
+                             )))
                             .flatMap(entry -> {
+                                Long previousTrackId = lounge.getCurrentTrackId();
                                 lounge.setCurrentTrackId(entry.getTrackId());
 
                                 return queueEntryRepository.delete(entry)
                                         .then(djLoungeRepository.save(lounge))
                                         .then(normalizeRemainingPositions(loungeId))
-                                        .then(getPlaybackState(loungeId));
+                                        .then(Mono.defer(() -> {
+                                            if (interactionService != null && previousTrackId != null) {
+                                                return interactionService.recordCoListening(loungeId, previousTrackId, null, true)
+                                                        .collectList()
+                                                        .onErrorResume(ex -> {
+                                                            log.warn("Failed to capture co-listening on track promotion: {}", ex.getMessage());
+                                                            return Mono.empty();
+                                                        })
+                                                        .then(getPlaybackState(loungeId));
+                                            }
+                                            return getPlaybackState(loungeId);
+                                        }));
                             });
                 });
     }
