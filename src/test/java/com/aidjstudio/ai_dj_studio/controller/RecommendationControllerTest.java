@@ -4,6 +4,7 @@ import com.aidjstudio.ai_dj_studio.dto.recommendation.RecommendationRailResponse
 import com.aidjstudio.ai_dj_studio.dto.recommendation.RecommendedTrackResponse;
 import com.aidjstudio.ai_dj_studio.dto.recommendation.UserTasteProfile;
 import com.aidjstudio.ai_dj_studio.service.ContentBasedRecommendationService;
+import com.aidjstudio.ai_dj_studio.service.HybridRecommendationService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -25,51 +26,80 @@ import static org.mockito.Mockito.*;
 class RecommendationControllerTest {
 
     @Mock
-    private ContentBasedRecommendationService recommendationService;
+    private HybridRecommendationService hybridRecommendationService;
+
+    @Mock
+    private ContentBasedRecommendationService contentRecommendationService;
 
     private RecommendationController controller;
     private Jwt testJwt;
 
     @BeforeEach
     void setUp() {
-        controller = new RecommendationController(recommendationService);
+        controller = new RecommendationController(hybridRecommendationService, contentRecommendationService);
         testJwt = mock(Jwt.class);
         lenient().when(testJwt.getSubject()).thenReturn("100");
     }
 
     @Test
-    @DisplayName("GET /api/v1/recommendations/personalized returns 200 with recommended tracks")
-    void getPersonalizedRecommendations_returns200() {
+    @DisplayName("GET /api/v1/recommendations/personalized defaults to HYBRID strategy")
+    void getPersonalizedRecommendations_defaultsToHybrid() {
         RecommendedTrackResponse trackResponse = RecommendedTrackResponse.builder()
                 .rank(1)
                 .trackId(2L)
                 .title("Solar Echo")
                 .artist("DJ Beta")
-                .similarityScore(0.923)
-                .reason("Match score 0.92")
+                .similarityScore(0.85)
+                .reason("Hybrid score 0.85")
                 .build();
 
         RecommendationRailResponse rail = RecommendationRailResponse.builder()
-                .strategy("CONTENT_BASED_PERSONALIZED")
+                .strategy("HYBRID_PERSONALIZED")
                 .userId(100L)
                 .totalRecommendations(1)
                 .tracks(List.of(trackResponse))
                 .build();
 
-        when(recommendationService.getPersonalizedRecommendations(100L, 10, true))
+        when(hybridRecommendationService.getHybridPersonalizedRecommendations(100L, 10, true))
                 .thenReturn(Mono.just(rail));
 
-        StepVerifier.create(controller.getPersonalizedRecommendations(10, true, testJwt))
+        StepVerifier.create(controller.getPersonalizedRecommendations(10, true, "HYBRID", testJwt))
                 .assertNext(response -> {
                     assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
                     assertThat(response.getBody()).isNotNull();
-                    assertThat(response.getBody().getStrategy()).isEqualTo("CONTENT_BASED_PERSONALIZED");
+                    assertThat(response.getBody().getStrategy()).isEqualTo("HYBRID_PERSONALIZED");
                     assertThat(response.getBody().getTracks()).hasSize(1);
                     assertThat(response.getBody().getTracks().get(0).getTitle()).isEqualTo("Solar Echo");
                 })
                 .verifyComplete();
 
-        verify(recommendationService).getPersonalizedRecommendations(100L, 10, true);
+        verify(hybridRecommendationService).getHybridPersonalizedRecommendations(100L, 10, true);
+        verifyNoInteractions(contentRecommendationService);
+    }
+
+    @Test
+    @DisplayName("GET /api/v1/recommendations/personalized with strategy=CONTENT_BASED delegates to contentService")
+    void getPersonalizedRecommendations_contentBasedStrategy() {
+        RecommendationRailResponse rail = RecommendationRailResponse.builder()
+                .strategy("CONTENT_BASED_PERSONALIZED")
+                .userId(100L)
+                .totalRecommendations(1)
+                .tracks(List.of(RecommendedTrackResponse.builder().rank(1).trackId(3L).build()))
+                .build();
+
+        when(contentRecommendationService.getPersonalizedRecommendations(100L, 10, true))
+                .thenReturn(Mono.just(rail));
+
+        StepVerifier.create(controller.getPersonalizedRecommendations(10, true, "CONTENT_BASED", testJwt))
+                .assertNext(response -> {
+                    assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+                    assertThat(response.getBody()).isNotNull();
+                    assertThat(response.getBody().getStrategy()).isEqualTo("CONTENT_BASED_PERSONALIZED");
+                })
+                .verifyComplete();
+
+        verify(contentRecommendationService).getPersonalizedRecommendations(100L, 10, true);
+        verifyNoInteractions(hybridRecommendationService);
     }
 
     @Test
@@ -82,7 +112,7 @@ class RecommendationControllerTest {
                 .tracks(List.of(RecommendedTrackResponse.builder().rank(1).trackId(2L).build()))
                 .build();
 
-        when(recommendationService.getTrackRecommendations(1L, 5))
+        when(contentRecommendationService.getTrackRecommendations(1L, 5))
                 .thenReturn(Mono.just(rail));
 
         StepVerifier.create(controller.getTrackRecommendations(1L, 5))
@@ -93,7 +123,7 @@ class RecommendationControllerTest {
                 })
                 .verifyComplete();
 
-        verify(recommendationService).getTrackRecommendations(1L, 5);
+        verify(contentRecommendationService).getTrackRecommendations(1L, 5);
     }
 
     @Test
@@ -108,7 +138,7 @@ class RecommendationControllerTest {
                 .coldStart(false)
                 .build();
 
-        when(recommendationService.getUserTasteProfile(100L))
+        when(contentRecommendationService.getUserTasteProfile(100L))
                 .thenReturn(Mono.just(profile));
 
         StepVerifier.create(controller.getUserTasteProfile(testJwt))
@@ -119,6 +149,6 @@ class RecommendationControllerTest {
                 })
                 .verifyComplete();
 
-        verify(recommendationService).getUserTasteProfile(100L);
+        verify(contentRecommendationService).getUserTasteProfile(100L);
     }
 }

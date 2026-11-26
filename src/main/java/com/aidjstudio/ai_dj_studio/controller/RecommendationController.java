@@ -3,6 +3,7 @@ package com.aidjstudio.ai_dj_studio.controller;
 import com.aidjstudio.ai_dj_studio.dto.recommendation.RecommendationRailResponse;
 import com.aidjstudio.ai_dj_studio.dto.recommendation.UserTasteProfile;
 import com.aidjstudio.ai_dj_studio.service.ContentBasedRecommendationService;
+import com.aidjstudio.ai_dj_studio.service.HybridRecommendationService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -15,18 +16,26 @@ import reactor.core.publisher.Mono;
 @RequiredArgsConstructor
 public class RecommendationController {
 
-    private final ContentBasedRecommendationService recommendationService;
+    private final HybridRecommendationService hybridRecommendationService;
+    private final ContentBasedRecommendationService contentRecommendationService;
 
     @GetMapping("/personalized")
     public Mono<ResponseEntity<RecommendationRailResponse>> getPersonalizedRecommendations(
             @RequestParam(defaultValue = "10") int limit,
             @RequestParam(defaultValue = "true") boolean excludeInteracted,
+            @RequestParam(defaultValue = "HYBRID") String strategy,
             @AuthenticationPrincipal Jwt jwt
     ) {
         Long authenticatedUserId = Long.valueOf(jwt.getSubject());
 
-        return recommendationService
-                .getPersonalizedRecommendations(authenticatedUserId, limit, excludeInteracted)
+        if ("CONTENT_BASED".equalsIgnoreCase(strategy)) {
+            return contentRecommendationService
+                    .getPersonalizedRecommendations(authenticatedUserId, limit, excludeInteracted)
+                    .map(ResponseEntity::ok);
+        }
+
+        return hybridRecommendationService
+                .getHybridPersonalizedRecommendations(authenticatedUserId, limit, excludeInteracted)
                 .map(ResponseEntity::ok);
     }
 
@@ -35,7 +44,7 @@ public class RecommendationController {
             @PathVariable Long trackId,
             @RequestParam(defaultValue = "10") int limit
     ) {
-        return recommendationService
+        return contentRecommendationService
                 .getTrackRecommendations(trackId, limit)
                 .map(ResponseEntity::ok);
     }
@@ -46,7 +55,7 @@ public class RecommendationController {
     ) {
         Long authenticatedUserId = Long.valueOf(jwt.getSubject());
 
-        return recommendationService
+        return contentRecommendationService
                 .getUserTasteProfile(authenticatedUserId)
                 .map(ResponseEntity::ok);
     }

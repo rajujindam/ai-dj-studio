@@ -39,5 +39,16 @@ public class RecommendationScoreBreakdown {
     private double valenceWeightedScore;
     private BigDecimal valenceDelta;
 
+    // Hybrid components (F25)
+    private Double contentScore;
+    private Double contentWeight;
+    private Double contentWeightedScore;
+
+    private Double collaborativeScore;
+    private Double collaborativeWeight;
+    private Double collaborativeWeightedScore;
+    private String collaborativeReason;
+    private Integer coListeningCount;
+
     private String reason;
 }

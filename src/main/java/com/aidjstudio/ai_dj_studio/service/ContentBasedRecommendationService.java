@@ -348,7 +348,7 @@ public class ContentBasedRecommendationService {
         }
     }
 
-    private boolean isPositiveInteraction(Interaction interaction) {
+    public boolean isPositiveInteraction(Interaction interaction) {
         if (interaction == null) {
             return false;
         }
